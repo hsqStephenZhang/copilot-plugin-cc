@@ -33,7 +33,8 @@ export class FakeCopilotSession {
     }
   }
 
-  async sendAndWait(options) {
+  async sendAndWait(options, timeout) {
+    this.timeout = timeout;
     this.messages.push(options);
     for (const event of this._cannedEvents) {
       this._emit(event);

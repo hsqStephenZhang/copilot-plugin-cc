@@ -12,7 +12,7 @@ import {
     DEFAULT_CONTINUE_PROMPT,
     createSession,
     runPrompt,
-    abortSession,
+    shutdownClient,
     getCopilotAvailability,
     getCopilotLoginStatus,
     getSessionRuntimeStatus,
@@ -52,6 +52,7 @@ import {
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 import {
   renderReviewResult,
+  renderNativeReviewResult,
   renderStoredJobResult,
   renderCancelReport,
   renderJobStatusReport,
@@ -64,7 +65,7 @@ const ROOT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const REVIEW_SCHEMA = path.join(ROOT_DIR, "schemas", "review-output.schema.json");
 const DEFAULT_STATUS_WAIT_TIMEOUT_MS = 240000;
 const DEFAULT_STATUS_POLL_INTERVAL_MS = 2000;
-const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
+const VALID_REASONING_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
 const MODEL_ALIASES = new Map([
   ["codex", "gpt-5.3-codex"],
   ["gemini", "gemini-3.1-pro"]
@@ -78,7 +79,7 @@ function printUsage() {
       "  node scripts/copilot-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--json]",
       "  node scripts/copilot-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
       "  node scripts/copilot-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
-      "  node scripts/copilot-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|codex|gemini>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
+      "  node scripts/copilot-companion.mjs task [--background|--wait] [--write] [--resume-last|--resume|--fresh] [--model <model|codex|gemini>] [--effort <low|medium|high|xhigh|max>] [prompt]",
       "  node scripts/copilot-companion.mjs status [job-id] [--all] [--json]",
       "  node scripts/copilot-companion.mjs result [job-id] [--json]",
       "  node scripts/copilot-companion.mjs cancel [job-id] [--json]"
@@ -119,7 +120,7 @@ function normalizeReasoningEffort(effort) {
   }
   if (!VALID_REASONING_EFFORTS.has(normalized)) {
     throw new Error(
-      `Unsupported reasoning effort "${effort}". Use one of: none, minimal, low, medium, high, xhigh.`
+      `Unsupported reasoning effort "${effort}". Use one of: low, medium, high, xhigh, max.`
     );
   }
   return normalized;
@@ -177,12 +178,12 @@ function firstMeaningfulLine(text, fallback) {
   return line ?? fallback;
 }
 
-function buildSetupReport(cwd, actionsTaken = []) {
+async function buildSetupReport(cwd, actionsTaken = []) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const nodeStatus = binaryAvailable("node", ["--version"], { cwd });
   const npmStatus = binaryAvailable("npm", ["--version"], { cwd });
   const copilotStatus = getCopilotAvailability(cwd);
-  const authStatus = getCopilotLoginStatus(cwd);
+  const authStatus = await getCopilotLoginStatus(cwd);
   const config = getConfig(workspaceRoot);
 
   const nextSteps = [];
@@ -210,7 +211,7 @@ function buildSetupReport(cwd, actionsTaken = []) {
   };
 }
 
-function handleSetup(argv) {
+async function handleSetup(argv) {
   const { options } = parseCommandInput(argv, {
     valueOptions: ["cwd"],
     booleanOptions: ["json", "enable-review-gate", "disable-review-gate"]
@@ -232,7 +233,7 @@ function handleSetup(argv) {
     actionsTaken.push(`Disabled the stop-time review gate for ${workspaceRoot}.`);
   }
 
-  const finalReport = buildSetupReport(cwd, actionsTaken);
+  const finalReport = await buildSetupReport(cwd, actionsTaken);
   outputResult(options.json ? finalReport : renderSetupReport(finalReport), options.json);
 }
 
@@ -246,10 +247,13 @@ function buildAdversarialReviewPrompt(context, focusText) {
   });
 }
 
-function ensureCopilotReady(cwd) {
-  const authStatus = getCopilotLoginStatus(cwd);
+async function ensureCopilotReady(cwd) {
+  const authStatus = await getCopilotLoginStatus(cwd);
   if (!authStatus.available) {
     throw new Error("Copilot CLI is not installed or is missing required runtime support. Install it with `npm install -g @github/copilot-cli`, then rerun `/copilot:setup`.");
+  }
+  if (!authStatus.loggedIn) {
+    throw new Error("Copilot is not authenticated. Run `!copilot auth login`, then rerun `/copilot:setup`.");
   }
 }
 
@@ -287,7 +291,7 @@ async function resolveLatestTrackedTaskSession(workspaceRoot, options = {}) {
 }
 
 async function executeReviewRun(request) {
-  ensureCopilotReady(request.cwd);
+  await ensureCopilotReady(request.cwd);
   ensureGitRepository(request.cwd);
 
   const target = resolveReviewTarget(request.cwd, {
@@ -317,7 +321,7 @@ async function executeReviewRun(request) {
     model: request.model,
     cwd: request.cwd,
     systemMessage: isStructured
-      ? "You are Copilot performing an adversarial software review. Return your findings as JSON matching the provided schema."
+      ? `You are Copilot performing an adversarial software review. Return only JSON matching this schema:\n${fs.readFileSync(REVIEW_SCHEMA, "utf8")}`
       : "You are Copilot performing a code review. Provide clear, actionable feedback."
   });
 
@@ -378,9 +382,9 @@ async function executeReviewRun(request) {
     exitStatus: rawOutput ? 0 : 1,
     copilotSessionId: result.sessionId,
     payload,
-    rendered: renderReviewResult(
-      { parsed: null, parseError: null, rawOutput },
-      { reviewLabel: reviewName, targetLabel: context.target.label, reasoningSummary: [] }
+    rendered: renderNativeReviewResult(
+      { stdout: rawOutput, stderr: "", status: rawOutput ? 0 : 1 },
+      { reviewLabel: reviewName, targetLabel: context.target.label }
     ),
     summary: firstMeaningfulLine(rawOutput, `${reviewName} completed.`),
     jobTitle: `Copilot ${reviewName}`,
@@ -391,7 +395,7 @@ async function executeReviewRun(request) {
 
 async function executeTaskRun(request) {
   const workspaceRoot = resolveWorkspaceRoot(request.cwd);
-  ensureCopilotReady(request.cwd);
+  await ensureCopilotReady(request.cwd);
 
   const taskMetadata = buildTaskRunMetadata({
     prompt: request.prompt,
@@ -419,7 +423,9 @@ async function executeTaskRun(request) {
     model: request.model,
     cwd: request.cwd,
     sessionId,
-    resume: request.resumeLast
+    resume: request.resumeLast,
+    write: request.write,
+    reasoningEffort: request.effort
   });
 
   const promptText = request.prompt || DEFAULT_CONTINUE_PROMPT;
@@ -588,17 +594,27 @@ function enqueueBackgroundTask(cwd, job, request) {
   const { logFile } = createTrackedProgress(job);
   appendLogLine(logFile, "Queued for background execution.");
 
-  const child = spawnDetachedTaskWorker(cwd, job.id);
   const queuedRecord = {
     ...job,
     status: "queued",
     phase: "queued",
-    pid: child.pid ?? null,
+    pid: null,
     logFile,
     request
   };
   writeJobFile(job.workspaceRoot, job.id, queuedRecord);
   upsertJob(job.workspaceRoot, queuedRecord);
+  const child = spawnDetachedTaskWorker(cwd, job.id);
+  if (child.pid) {
+    upsertJob(job.workspaceRoot, { id: job.id, pid: child.pid });
+  }
+  child.once("error", (error) => {
+    const failed = { id: job.id, status: "failed", phase: "failed", pid: null, errorMessage: error.message };
+    writeJobFile(job.workspaceRoot, job.id, { ...queuedRecord, ...failed });
+    upsertJob(job.workspaceRoot, failed);
+    process.stderr.write(`Copilot worker failed to start: ${error.message}\n`);
+    process.exitCode = 1;
+  });
 
   return {
     payload: {
@@ -663,7 +679,7 @@ async function handleReview(argv) {
 async function handleTask(argv) {
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["model", "effort", "cwd", "prompt-file"],
-    booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background"],
+    booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background", "wait"],
     aliasMap: {
       m: "model"
     }
@@ -674,6 +690,9 @@ async function handleTask(argv) {
   const model = normalizeRequestedModel(options.model);
   const effort = normalizeReasoningEffort(options.effort);
   const prompt = readTaskPrompt(cwd, options, positionals);
+  if (options.background && options.wait) {
+    throw new Error("Choose either --background or --wait.");
+  }
 
   const resumeLast = Boolean(options["resume-last"] || options.resume);
   const fresh = Boolean(options.fresh);
@@ -687,7 +706,7 @@ async function handleTask(argv) {
   });
 
   if (options.background) {
-    ensureCopilotReady(cwd);
+    await ensureCopilotReady(cwd);
     requireTaskRequest(prompt, resumeLast);
 
     const job = buildTaskJob(workspaceRoot, taskMetadata, write);
@@ -737,6 +756,9 @@ async function handleTaskWorker(argv) {
   const storedJob = readStoredJob(workspaceRoot, options["job-id"]);
   if (!storedJob) {
     throw new Error(`No stored job found for ${options["job-id"]}.`);
+  }
+  if (storedJob.status !== "queued") {
+    throw new Error(`Stored job ${options["job-id"]} is no longer queued.`);
   }
 
   const request = storedJob.request;
@@ -903,7 +925,7 @@ async function main() {
 
   switch (subcommand) {
     case "setup":
-      handleSetup(argv);
+      await handleSetup(argv);
       break;
     case "review":
       await handleReview(argv);
@@ -940,9 +962,12 @@ main().catch((error) => {
   const message = error instanceof Error ? error.message : String(error);
   const isAuthError = /auth|login|unauthenticated|unauthorized|not signed in|credentials/i.test(message);
   if (isAuthError) {
-    process.stderr.write(`Copilot authentication failed. Run \`!copilot login\` to authenticate and retry.\n`);
+    process.stderr.write(`Copilot authentication failed: ${message}\nRun \`!copilot auth login\` to authenticate and retry.\n`);
   } else {
     process.stderr.write(`${message}\n`);
   }
+  process.exitCode = 1;
+}).finally(shutdownClient).catch((error) => {
+  process.stderr.write(`Copilot shutdown failed: ${error.message}\n`);
   process.exitCode = 1;
 });

@@ -6,7 +6,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-import { getCopilotLoginStatus } from "./lib/copilot-client.mjs";
+import { getCopilotLoginStatus, shutdownClient } from "./lib/copilot-client.mjs";
 import { loadPromptTemplate, interpolateTemplate } from "./lib/prompts.mjs";
 import { getConfig, listJobs } from "./lib/state.mjs";
 import { sortJobsNewestFirst } from "./lib/job-control.mjs";
@@ -56,8 +56,8 @@ function buildStopReviewPrompt(input = {}) {
   });
 }
 
-function buildSetupNote(cwd) {
-  const copilotStatus = getCopilotLoginStatus(cwd);
+async function buildSetupNote(cwd) {
+  const copilotStatus = await getCopilotLoginStatus(cwd);
   if (!copilotStatus.available) {
     const detail = copilotStatus.detail ? ` ${copilotStatus.detail}.` : "";
     return `Copilot is not installed for the review gate.${detail} Run /copilot:setup to install it.`;
@@ -138,7 +138,7 @@ function runStopReview(cwd, input = {}) {
   }
 }
 
-function main() {
+async function main() {
   const input = readHookInput();
   const cwd = input.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
   const workspaceRoot = resolveWorkspaceRoot(cwd);
@@ -155,7 +155,7 @@ function main() {
     return;
   }
 
-  const setupNote = buildSetupNote(cwd);
+  const setupNote = await buildSetupNote(cwd);
   if (setupNote) {
     logNote(setupNote);
     logNote(runningTaskNote);
@@ -174,4 +174,7 @@ function main() {
   logNote(runningTaskNote);
 }
 
-main();
+main().finally(shutdownClient).catch((error) => {
+  process.stderr.write(`${error.message}\n`);
+  process.exitCode = 1;
+});

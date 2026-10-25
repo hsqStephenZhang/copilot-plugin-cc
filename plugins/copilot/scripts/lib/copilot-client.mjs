@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { binaryAvailable, runCommand } from "./process.mjs";
+import { binaryAvailable } from "./process.mjs";
 
 const SESSION_ID_ENV = "COPILOT_COMPANION_SESSION_ID";
 const DEFAULT_CONTINUE_PROMPT =
@@ -39,13 +39,25 @@ export async function shutdownClient() {
 
 export async function createSession(options = {}, clientOverride) {
   const client = clientOverride ?? await ensureClient();
+  const readOnly = !options.write;
   const config = {
     model: options.model || undefined,
     streaming: true,
     workingDirectory: options.cwd || process.cwd(),
-    systemMessage: options.systemMessage || undefined,
+    systemMessage: options.systemMessage ? { mode: "append", content: options.systemMessage } : undefined,
     tools: options.tools || undefined,
-    onPermissionRequest: async () => ({ kind: "approved" }),
+    ...(readOnly ? {
+      availableTools: ["builtin:view", "builtin:glob", "builtin:grep", "builtin:web_fetch", "builtin:web_search"]
+    } : {}),
+    onPermissionRequest: (request) => {
+      if (request.managedApprovalRequired || request.requestSandboxBypass) {
+        return { kind: "reject", feedback: "This request requires human approval. Run it interactively in Copilot." };
+      }
+      if (!readOnly || request.kind === "read" || request.kind === "url") {
+        return { kind: "approved" };
+      }
+      return { kind: "reject", feedback: "This Copilot run is read-only; shell, write, and external tool requests are not permitted." };
+    },
     ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {})
   };
   return options.resume
@@ -58,7 +70,7 @@ export async function runPrompt(session, prompt, options = {}) {
   const chunks = [];
   const reasoning = [];
 
-  session.on((event) => {
+  const unsubscribe = session.on((event) => {
     const eventType = event.type?.value ?? event.type;
     switch (eventType) {
       case "assistant.message_delta":
@@ -108,14 +120,17 @@ export async function runPrompt(session, prompt, options = {}) {
     }
   });
 
-  const response = await session.sendAndWait({ prompt });
-  const content = response?.data?.content ?? chunks.join("");
-
-  return {
-    content,
-    reasoning: reasoning.join(""),
-    sessionId: session.sessionId
-  };
+  try {
+    const response = await session.sendAndWait({ prompt }, options.timeoutMs ?? 15 * 60 * 1000);
+    return {
+      content: response?.data?.content ?? chunks.join(""),
+      reasoning: reasoning.join(""),
+      sessionId: session.sessionId
+    };
+  } finally {
+    unsubscribe();
+    await session.disconnect();
+  }
 }
 
 export async function abortSession(session) {
@@ -134,12 +149,18 @@ export function getSessionRuntimeStatus(env = process.env) {
   };
 }
 
-export function getCopilotLoginStatus(cwd) {
+export async function getCopilotLoginStatus(cwd) {
   const availability = getCopilotAvailability(cwd);
   if (!availability.available) {
     return { available: false, loggedIn: false, detail: availability.detail };
   }
-  return { available: true, loggedIn: true, detail: "assumed authenticated" };
+  const client = await ensureClient();
+  const auth = await client.getAuthStatus();
+  return {
+    available: true,
+    loggedIn: auth.isAuthenticated,
+    detail: auth.statusMessage || (auth.isAuthenticated ? "authenticated" : "not authenticated")
+  };
 }
 
 export function parseStructuredOutput(rawOutput, fallback = {}) {
