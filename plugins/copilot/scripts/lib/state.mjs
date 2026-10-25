@@ -2,8 +2,10 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import lockfile from "proper-lockfile";
 
 import { resolveWorkspaceRoot } from "./workspace.mjs";
+import { writeJsonFile } from "./fs.mjs";
 
 const STATE_VERSION = 1;
 const PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
@@ -81,15 +83,16 @@ export function loadState(cwd) {
       },
       jobs: Array.isArray(parsed.jobs) ? parsed.jobs.map(normalizeJobSessionIds) : []
     };
-  } catch {
-    return defaultState();
+  } catch (error) {
+    throw new Error(`Cannot read Copilot state at ${stateFile}: ${error.message}`, { cause: error });
   }
 }
 
 function pruneJobs(jobs) {
-  return [...jobs]
-    .sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")))
-    .slice(0, MAX_JOBS);
+  const sorted = [...jobs].sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")));
+  const active = sorted.filter((job) => job.status === "queued" || job.status === "running");
+  const finished = sorted.filter((job) => job.status !== "queued" && job.status !== "running");
+  return [...active, ...finished.slice(0, Math.max(0, MAX_JOBS - active.length))];
 }
 
 function removeFileIfExists(filePath) {
@@ -98,7 +101,7 @@ function removeFileIfExists(filePath) {
   }
 }
 
-export function saveState(cwd, state) {
+function saveStateUnlocked(cwd, state) {
   const previousJobs = loadState(cwd).jobs;
   ensureStateDir(cwd);
   const nextJobs = pruneJobs(state.jobs ?? []);
@@ -120,14 +123,42 @@ export function saveState(cwd, state) {
     removeFileIfExists(job.logFile);
   }
 
-  fs.writeFileSync(resolveStateFile(cwd), `${JSON.stringify(nextState, null, 2)}\n`, "utf8");
+  writeJsonFile(resolveStateFile(cwd), nextState);
   return nextState;
 }
 
+function withStateLock(cwd, action) {
+  ensureStateDir(cwd);
+  const stateFile = resolveStateFile(cwd);
+  const deadline = Date.now() + 15000;
+  const waitArray = new Int32Array(new SharedArrayBuffer(4));
+  let release;
+  while (!release) {
+    try {
+      release = lockfile.lockSync(stateFile, { realpath: false, stale: 10000 });
+    } catch (error) {
+      if (error.code !== "ELOCKED") throw error;
+      if (Date.now() >= deadline) throw new Error(`Timed out waiting for Copilot state lock: ${stateFile}`);
+      Atomics.wait(waitArray, 0, 0, 10);
+    }
+  }
+  try {
+    return action();
+  } finally {
+    release();
+  }
+}
+
+export function saveState(cwd, state) {
+  return withStateLock(cwd, () => saveStateUnlocked(cwd, state));
+}
+
 export function updateState(cwd, mutate) {
-  const state = loadState(cwd);
-  mutate(state);
-  return saveState(cwd, state);
+  return withStateLock(cwd, () => {
+    const state = loadState(cwd);
+    mutate(state);
+    return saveStateUnlocked(cwd, state);
+  });
 }
 
 export function generateJobId(prefix = "job") {
@@ -145,6 +176,9 @@ export function upsertJob(cwd, jobPatch) {
         updatedAt: timestamp,
         ...jobPatch
       });
+      return;
+    }
+    if (state.jobs[existingIndex].status === "cancelled") {
       return;
     }
     state.jobs[existingIndex] = {
@@ -173,10 +207,16 @@ export function getConfig(cwd) {
 }
 
 export function writeJobFile(cwd, jobId, payload) {
-  ensureStateDir(cwd);
-  const jobFile = resolveJobFile(cwd, jobId);
-  fs.writeFileSync(jobFile, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
-  return jobFile;
+  return withStateLock(cwd, () => {
+    const jobFile = resolveJobFile(cwd, jobId);
+    const existing = fs.existsSync(jobFile) ? readJobFile(jobFile) : null;
+    const tracked = loadState(cwd).jobs.find((job) => job.id === jobId);
+    if (payload.status !== "cancelled" && (existing?.status === "cancelled" || tracked?.status === "cancelled")) {
+      return jobFile;
+    }
+    writeJsonFile(jobFile, payload);
+    return jobFile;
+  });
 }
 
 export function readJobFile(jobFile) {

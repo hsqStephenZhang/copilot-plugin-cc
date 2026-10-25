@@ -54,3 +54,7 @@ Background flow:
 node "${CLAUDE_PLUGIN_ROOT}/scripts/copilot-companion.mjs" review "--background $ARGUMENTS"
 ```
 - Return the helper's queued-job output. Do not poll for completion.
+- If `Monitor` is available, start one job-specific watch with it:
+  `node "${CLAUDE_PLUGIN_ROOT}/scripts/job-monitor.mjs" "<absolute Job file path from the launch output>"`
+- When the terminal-status notification arrives, fetch `/copilot:result <job-id>` once and return the review output without fixing anything.
+- If Monitor is unavailable, denied, or reaches its deadline, keep the job running and retain the status/result commands as the fallback. Never wait in foreground Bash for the watcher.

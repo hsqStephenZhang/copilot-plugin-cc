@@ -1,7 +1,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import path from "node:path";
 import { createRuntimeWorkspace, cleanupDir } from "./helpers.mjs";
+import { watchJobFile } from "../plugins/copilot/scripts/job-monitor.mjs";
 
 describe("copilot-companion CLI", () => {
   it("prints help and rejects unknown subcommands", () => {
@@ -36,6 +38,29 @@ describe("copilot-companion CLI", () => {
 });
 
 describe("runtime command integration", () => {
+  it("completes background task and review workers and makes their output immediately retrievable", async () => {
+    const workspace = createRuntimeWorkspace();
+    try {
+      fs.writeFileSync(path.join(workspace.dir, "file.txt"), "reviewable change\n");
+      for (const args of [["task", "Investigate"], ["review"]]) {
+        const launch = workspace.run([...args, "--background", "--json"]);
+        assert.equal(launch.status, 0, launch.stderr);
+        const queued = JSON.parse(launch.stdout);
+        assert.equal(queued.status, "queued");
+        const terminal = await watchJobFile(queued.jobFile, { interval: 10 });
+        assert.equal(terminal.status, "completed");
+        const result = workspace.run(["result", queued.jobId, "--json"]);
+        assert.equal(result.status, 0, result.stderr);
+        const stored = JSON.parse(result.stdout);
+        assert.equal(stored.job.status, "completed");
+        assert.equal(stored.storedJob.claudeSessionId, workspace.env.COPILOT_COMPANION_SESSION_ID);
+        assert.ok(stored.storedJob.copilotSessionId);
+      }
+    } finally {
+      cleanupDir(workspace.dir);
+    }
+  });
+
   it("passes write, effort and working directory, and resumes the stored Copilot ID", () => {
     const workspace = createRuntimeWorkspace();
     try {

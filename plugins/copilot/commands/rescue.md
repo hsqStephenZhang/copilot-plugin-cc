@@ -50,5 +50,9 @@ Operating rules:
 - Leave the model unset unless the user explicitly asks for one. If they ask for `codex`, map it to `gpt-5.3-codex`; pass other concrete model IDs unchanged.
 - Leave `--resume` and `--fresh` in the runtime arguments.
 - On failure, report the error. Never return an empty response or claim success.
+- After a background launch, if `Monitor` is available, start one watch for the absolute `Job file` path returned by the helper:
+  `node "${CLAUDE_PLUGIN_ROOT}/scripts/job-monitor.mjs" "<job-file>"`
+- Launch that watcher with the `Monitor` tool, not foreground Bash. It emits exactly one terminal-status line and exits. Fetch `/copilot:result <job-id>` once when notified.
+- If Monitor is unavailable, denied, or reaches its deadline, preserve the job ID and the `/copilot:status` / `/copilot:result` fallback. Do not cancel the worker or repeatedly poll.
 - If the helper reports that Copilot is missing or unauthenticated, stop and tell the user to run `/copilot:setup`.
 - If the user did not supply a request, ask what Copilot should investigate or fix.

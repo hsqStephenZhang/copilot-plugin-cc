@@ -50,8 +50,8 @@ function cleanupSessionJobs(cwd, sessionId) {
           completedAt: new Date().toISOString(),
           errorMessage: "The owning Claude session ended."
         };
-        writeJobFile(workspaceRoot, job.id, { ...readStoredJob(workspaceRoot, job.id), ...cancelled });
         upsertJob(workspaceRoot, cancelled);
+        writeJobFile(workspaceRoot, job.id, { ...readStoredJob(workspaceRoot, job.id), ...cancelled });
       }
     }
   } catch (error) {

@@ -5,6 +5,38 @@ import path from "node:path";
 
 import { createRuntimeWorkspace, cleanupDir } from "./helpers.mjs";
 
+describe("session lifecycle", () => {
+  it("cancels only the ending session's active jobs and preserves completed history", () => {
+    const workspace = createRuntimeWorkspace();
+    try {
+      const completed = workspace.run(["task", "Keep this history", "--wait", "--json"]);
+      assert.equal(completed.status, 0, completed.stderr);
+      const stateRoot = path.join(workspace.env.CLAUDE_PLUGIN_DATA, "state");
+      const stateDir = path.join(stateRoot, fs.readdirSync(stateRoot)[0]);
+      const stateFile = path.join(stateDir, "state.json");
+      const state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+      const finished = state.jobs[0];
+      const active = {
+        ...finished, id: "active-current", status: "queued", pid: null
+      };
+      const other = { ...active, id: "active-other", claudeSessionId: "other-claude-session" };
+      state.jobs.push(active, other);
+      fs.writeFileSync(stateFile, JSON.stringify(state));
+      for (const job of [active, other]) {
+        fs.writeFileSync(path.join(stateDir, "jobs", `${job.id}.json`), JSON.stringify(job));
+      }
+      const end = workspace.hook("session-lifecycle-hook", { hook_event_name: "SessionEnd" });
+      assert.equal(end.status, 0, end.stderr);
+      const jobs = JSON.parse(fs.readFileSync(stateFile, "utf8")).jobs;
+      assert.equal(jobs.find((job) => job.id === finished.id).status, "completed");
+      assert.equal(jobs.find((job) => job.id === active.id).status, "cancelled");
+      assert.equal(jobs.find((job) => job.id === other.id).status, "queued");
+    } finally {
+      cleanupDir(workspace.dir);
+    }
+  });
+});
+
 function enableGate(workspace) {
   const result = workspace.run(["setup", "--enable-review-gate", "--json"]);
   assert.equal(result.status, 0, result.stderr);

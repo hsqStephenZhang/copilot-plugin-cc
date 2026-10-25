@@ -2,7 +2,7 @@ import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { execSync } from "node:child_process";
+import { execSync, spawn } from "node:child_process";
 
 import { createTempWorkspace, cleanupDir } from "./helpers.mjs";
 import {
@@ -18,7 +18,8 @@ import {
   writeJobFile,
   readJobFile,
   resolveJobFile,
-  resolveJobLogFile
+  resolveJobLogFile,
+  resolveStateFile
 } from "../plugins/copilot/scripts/lib/state.mjs";
 
 describe("state", () => {
@@ -113,5 +114,54 @@ describe("state", () => {
     }
     const saved = saveState(tempDir, state);
     assert.ok(saved.jobs.length <= 50);
+  });
+
+  it("preserves jobs updated concurrently by independent workers", async () => {
+    saveState(tempDir, { jobs: [] });
+    const moduleUrl = new URL("../plugins/copilot/scripts/lib/state.mjs", import.meta.url).href;
+    const code = `import { upsertJob } from ${JSON.stringify(moduleUrl)};
+      for (let i = 0; i < 8; i++) upsertJob(process.argv[1], { id: process.argv[2] + "-" + i, status: "completed" });`;
+    await Promise.all(Array.from({ length: 4 }, (_, index) => new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, ["--input-type=module", "-e", code, tempDir, String(index)], {
+        env: process.env, stdio: ["ignore", "ignore", "pipe"]
+      });
+      let stderr = "";
+      child.stderr.on("data", (data) => { stderr += data; });
+      child.on("error", reject);
+      child.on("exit", (status) => status === 0 ? resolve() : reject(new Error(stderr)));
+    })));
+    assert.equal(listJobs(tempDir).length, 32);
+  });
+
+  it("never prunes active jobs even when there are more than the history limit", () => {
+    const jobs = Array.from({ length: 60 }, (_, i) => ({ id: `active-${i}`, status: "running" }));
+    const saved = saveState(tempDir, { jobs: [...jobs, { id: "finished", status: "completed" }] });
+    assert.equal(saved.jobs.length, 60);
+    assert.ok(saved.jobs.every((job) => job.status === "running"));
+  });
+
+  it("keeps cancellation terminal when a worker subsequently reports completion", () => {
+    saveState(tempDir, { jobs: [] });
+    const id = "cancelled-worker";
+    upsertJob(tempDir, { id, status: "running" });
+    writeJobFile(tempDir, id, { id, status: "running" });
+    upsertJob(tempDir, { id, status: "cancelled" });
+    upsertJob(tempDir, { id, status: "completed" });
+    writeJobFile(tempDir, id, { id, status: "completed" });
+    writeJobFile(tempDir, id, { id, status: "cancelled" });
+    writeJobFile(tempDir, id, { id, status: "failed" });
+    assert.equal(listJobs(tempDir).find((job) => job.id === id).status, "cancelled");
+    assert.equal(readJobFile(resolveJobFile(tempDir, id)).status, "cancelled");
+  });
+
+  it("reports corrupt state instead of silently resetting configuration", () => {
+    const stateFile = resolveStateFile(tempDir);
+    const previous = fs.readFileSync(stateFile);
+    try {
+      fs.writeFileSync(stateFile, "{broken");
+      assert.throws(() => loadState(tempDir), /Cannot read Copilot state/);
+    } finally {
+      fs.writeFileSync(stateFile, previous);
+    }
   });
 });

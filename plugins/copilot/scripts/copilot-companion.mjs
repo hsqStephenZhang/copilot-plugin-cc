@@ -26,8 +26,10 @@ import {
   generateJobId,
   getConfig,
   listJobs,
+  resolveJobFile,
   setConfig,
   upsertJob,
+  updateState,
   writeJobFile
 } from "./lib/state.mjs";
 import {
@@ -482,7 +484,7 @@ function buildTaskRunMetadata({ prompt, resumeLast = false }) {
 }
 
 function renderQueuedTaskLaunch(payload) {
-  return `${payload.title} started in the background as ${payload.jobId}. Check /copilot:status ${payload.jobId} for progress.\n`;
+  return `${payload.title} started in the background as ${payload.jobId}. Check /copilot:status ${payload.jobId} for progress.\nJob file: ${payload.jobFile}\n`;
 }
 
 function getJobKindLabel(kind, jobClass) {
@@ -598,7 +600,10 @@ function enqueueBackgroundTask(cwd, job, request) {
   upsertJob(job.workspaceRoot, queuedRecord);
   const child = spawnDetachedTaskWorker(cwd, job.id);
   if (child.pid) {
-    upsertJob(job.workspaceRoot, { id: job.id, pid: child.pid });
+    updateState(job.workspaceRoot, (state) => {
+      const queued = state.jobs.find((entry) => entry.id === job.id && entry.status === "queued");
+      if (queued) queued.pid = child.pid;
+    });
   }
   child.once("error", (error) => {
     const failed = { id: job.id, status: "failed", phase: "failed", pid: null, errorMessage: error.message };
@@ -614,6 +619,7 @@ function enqueueBackgroundTask(cwd, job, request) {
       status: "queued",
       title: job.title,
       summary: job.summary,
+      jobFile: resolveJobFile(job.workspaceRoot, job.id),
       logFile
     },
     logFile
@@ -895,11 +901,6 @@ async function handleCancel(argv) {
     errorMessage: "Cancelled by user."
   };
 
-  writeJobFile(workspaceRoot, job.id, {
-    ...existing,
-    ...nextJob,
-    cancelledAt: completedAt
-  });
   upsertJob(workspaceRoot, {
     id: job.id,
     status: "cancelled",
@@ -907,6 +908,11 @@ async function handleCancel(argv) {
     pid: null,
     errorMessage: "Cancelled by user.",
     completedAt
+  });
+  writeJobFile(workspaceRoot, job.id, {
+    ...existing,
+    ...nextJob,
+    cancelledAt: completedAt
   });
 
   const payload = {
