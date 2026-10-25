@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { binaryAvailable, runCommand } from "./process.mjs";
 
 const SESSION_ID_ENV = "COPILOT_COMPANION_SESSION_ID";
@@ -36,17 +37,20 @@ export async function shutdownClient() {
   }
 }
 
-export async function createSession(options = {}) {
-  const client = await ensureClient();
-  return client.createSession({
+export async function createSession(options = {}, clientOverride) {
+  const client = clientOverride ?? await ensureClient();
+  const config = {
     model: options.model || undefined,
     streaming: true,
-    sessionId: options.sessionId || undefined,
+    workingDirectory: options.cwd || process.cwd(),
     systemMessage: options.systemMessage || undefined,
     tools: options.tools || undefined,
     onPermissionRequest: async () => ({ kind: "approved" }),
     ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {})
-  });
+  };
+  return options.resume
+    ? client.resumeSession(options.sessionId, config)
+    : client.createSession({ ...config, sessionId: options.sessionId || undefined });
 }
 
 export async function runPrompt(session, prompt, options = {}) {
@@ -110,7 +114,7 @@ export async function runPrompt(session, prompt, options = {}) {
   return {
     content,
     reasoning: reasoning.join(""),
-    sessionId: session.config?.sessionId ?? null
+    sessionId: session.sessionId
   };
 }
 
@@ -160,7 +164,7 @@ export function buildPersistentTaskSessionId(prompt) {
     ? excerpt.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")
     : "";
   const prefix = TASK_SESSION_PREFIX.toLowerCase().replace(/\s+/g, "-");
-  return slug ? `${prefix}-${slug}` : prefix;
+  return `${prefix}${slug ? `-${slug}` : ""}-${randomUUID()}`;
 }
 
 export { DEFAULT_CONTINUE_PROMPT, TASK_SESSION_PREFIX, SESSION_ID_ENV };

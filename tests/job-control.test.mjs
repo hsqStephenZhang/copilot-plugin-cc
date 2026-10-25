@@ -10,14 +10,17 @@ import {
   appendLogLine,
   createJobLogFile,
   createJobRecord,
+  runTrackedJob,
   SESSION_ID_ENV
 } from "../plugins/copilot/scripts/lib/tracked-jobs.mjs";
 import {
   enrichJob,
+  findResumableTask,
   readJobProgressPreview,
   sortJobsNewestFirst,
   resolveResultJob,
-  resolveCancelableJob
+  resolveCancelableJob,
+  readStoredJob
 } from "../plugins/copilot/scripts/lib/job-control.mjs";
 
 describe("tracked-jobs", () => {
@@ -45,11 +48,23 @@ describe("tracked-jobs", () => {
     assert.equal(SESSION_ID_ENV, "COPILOT_COMPANION_SESSION_ID");
   });
 
-  it("createJobRecord sets sessionId from env", () => {
+  it("createJobRecord sets claudeSessionId from env", () => {
     const record = createJobRecord({ id: "test" }, {
       env: { COPILOT_COMPANION_SESSION_ID: "sess-123" }
     });
-    assert.equal(record.sessionId, "sess-123");
+    assert.equal(record.claudeSessionId, "sess-123");
+  });
+
+  it("keeps the owning Claude session separate from the completed Copilot session", async () => {
+    const job = createJobRecord({ id: "session-routing", workspaceRoot: tempDir }, {
+      env: { COPILOT_COMPANION_SESSION_ID: "claude-123" }
+    });
+    await runTrackedJob(job, async () => ({
+      exitStatus: 0, copilotSessionId: "copilot-456", payload: {}, rendered: "", summary: "Done"
+    }));
+    const stored = readStoredJob(tempDir, job.id);
+    assert.equal(stored.claudeSessionId, "claude-123");
+    assert.equal(stored.copilotSessionId, "copilot-456");
   });
 
   it("createJobLogFile creates log and appends title", () => {
@@ -95,6 +110,15 @@ describe("job-control", () => {
     ];
     const sorted = sortJobsNewestFirst(jobs);
     assert.equal(sorted[0].id, "b");
+  });
+
+  it("resumes only completed tasks belonging to the current Claude session", () => {
+    const own = { id: "own", jobClass: "task", status: "completed", claudeSessionId: "a", copilotSessionId: "copilot-a" };
+    const other = { ...own, id: "other", claudeSessionId: "b", copilotSessionId: "copilot-b", status: "running" };
+    assert.equal(findResumableTask([other, own], "a"), own);
+    assert.equal(findResumableTask([other], "a"), null);
+    assert.throws(() => findResumableTask([other], "b"), /still running/);
+    assert.equal(findResumableTask([{ ...own, copilotSessionId: null }], "a"), null);
   });
 
   it("enrichJob adds kindLabel and timing", () => {

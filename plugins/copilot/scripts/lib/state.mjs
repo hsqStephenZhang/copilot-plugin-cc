@@ -26,6 +26,15 @@ function defaultState() {
   };
 }
 
+export function normalizeJobSessionIds(job) {
+  const { sessionId, ...rest } = job;
+  return {
+    ...rest,
+    claudeSessionId: job.claudeSessionId ?? sessionId ?? null,
+    copilotSessionId: job.copilotSessionId ?? job.threadId ?? job.result?.sessionId ?? null
+  };
+}
+
 export function resolveStateDir(cwd) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   let canonicalWorkspaceRoot = workspaceRoot;
@@ -70,7 +79,7 @@ export function loadState(cwd) {
         ...defaultState().config,
         ...(parsed.config ?? {})
       },
-      jobs: Array.isArray(parsed.jobs) ? parsed.jobs : []
+      jobs: Array.isArray(parsed.jobs) ? parsed.jobs.map(normalizeJobSessionIds) : []
     };
   } catch {
     return defaultState();

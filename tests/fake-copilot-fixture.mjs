@@ -6,6 +6,7 @@
 export class FakeCopilotSession {
   constructor(config = {}) {
     this.config = config;
+    this.sessionId = config.sessionId ?? "generated-session";
     this.listeners = [];
     this.aborted = false;
     this.disconnected = false;
@@ -16,6 +17,7 @@ export class FakeCopilotSession {
 
   on(handler) {
     this.listeners.push(handler);
+    return () => { this.listeners = this.listeners.filter((listener) => listener !== handler); };
   }
 
   _emit(event) {
@@ -72,5 +74,10 @@ export class FakeCopilotClient {
     const session = new FakeCopilotSession({ ...config, ...this._sessionConfig });
     this.sessions.push(session);
     return session;
+  }
+
+  async resumeSession(sessionId, config) {
+    this.resumedSessionId = sessionId;
+    return this.createSession({ ...config, sessionId });
   }
 }

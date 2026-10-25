@@ -2,24 +2,42 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { FakeCopilotClient } from "./fake-copilot-fixture.mjs";
-import { buildPersistentTaskSessionId, parseStructuredOutput } from "../plugins/copilot/scripts/lib/copilot-client.mjs";
+import { buildPersistentTaskSessionId, createSession, parseStructuredOutput, runPrompt } from "../plugins/copilot/scripts/lib/copilot-client.mjs";
 
 describe("runtime: buildPersistentTaskSessionId", () => {
   it("returns session ID with task prefix", () => {
     const id = buildPersistentTaskSessionId("Fix the authentication bug");
-    assert.ok(id.startsWith("Copilot Companion Task"));
-    assert.ok(id.includes("Fix the authentication bug"));
+    assert.match(id, /^copilot-companion-task-fix-the-authentication-bug-/);
+    assert.notEqual(id, buildPersistentTaskSessionId("Fix the authentication bug"));
   });
 
   it("handles empty prompt", () => {
     const id = buildPersistentTaskSessionId("");
-    assert.equal(id, "Copilot Companion Task");
+    assert.match(id, /^copilot-companion-task-[a-f0-9-]+$/);
+    assert.notEqual(id, buildPersistentTaskSessionId(""));
   });
 
   it("shortens long prompts", () => {
     const longPrompt = "A".repeat(100);
     const id = buildPersistentTaskSessionId(longPrompt);
-    assert.ok(id.length < 100);
+    assert.ok(id.length < 120);
+  });
+
+  it("does not collide for non-Latin prompts", () => {
+    assert.notEqual(buildPersistentTaskSessionId("修复"), buildPersistentTaskSessionId("检查"));
+  });
+});
+
+describe("runtime: session routing", () => {
+  it("resumes the Copilot session with its working directory", async () => {
+    const client = new FakeCopilotClient();
+    const session = await createSession({
+      sessionId: "copilot-123", resume: true, cwd: "/workspace/isolated-worktree"
+    }, client);
+    assert.equal(client.resumedSessionId, "copilot-123");
+    assert.equal(session.config.workingDirectory, "/workspace/isolated-worktree");
+    const result = await runPrompt(session, "Continue");
+    assert.equal(result.sessionId, "copilot-123");
   });
 });
 

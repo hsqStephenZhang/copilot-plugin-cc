@@ -63,7 +63,7 @@ export function createJobRecord(base, options = {}) {
   return {
     ...base,
     createdAt: nowIso(),
-    ...(sessionId ? { sessionId } : {})
+    ...(sessionId ? { claudeSessionId: sessionId } : {})
   };
 }
 
@@ -85,7 +85,7 @@ export function createJobProgressUpdater(workspaceRoot, jobId) {
 
     if (normalized.threadId && normalized.threadId !== lastThreadId) {
       lastThreadId = normalized.threadId;
-      patch.threadId = normalized.threadId;
+      patch.copilotSessionId = normalized.threadId;
       changed = true;
     }
 
@@ -158,7 +158,7 @@ export async function runTrackedJob(job, runner, options = {}) {
     writeJobFile(job.workspaceRoot, job.id, {
       ...runningRecord,
       status: completionStatus,
-      threadId: execution.threadId ?? null,
+      copilotSessionId: execution.copilotSessionId ?? null,
       turnId: execution.turnId ?? null,
       pid: null,
       phase: completionStatus === "completed" ? "done" : "failed",
@@ -169,7 +169,7 @@ export async function runTrackedJob(job, runner, options = {}) {
     upsertJob(job.workspaceRoot, {
       id: job.id,
       status: completionStatus,
-      threadId: execution.threadId ?? null,
+      copilotSessionId: execution.copilotSessionId ?? null,
       turnId: execution.turnId ?? null,
       summary: execution.summary,
       phase: completionStatus === "completed" ? "done" : "failed",

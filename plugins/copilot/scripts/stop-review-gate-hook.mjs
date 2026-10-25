@@ -42,7 +42,7 @@ function filterJobsForCurrentSession(jobs, input = {}) {
   if (!sessionId) {
     return jobs;
   }
-  return jobs.filter((job) => job.sessionId === sessionId);
+  return jobs.filter((job) => job.claudeSessionId === sessionId);
 }
 
 function buildStopReviewPrompt(input = {}) {

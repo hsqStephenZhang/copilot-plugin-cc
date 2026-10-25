@@ -1,6 +1,6 @@
 import fs from "node:fs";
 
-import { getConfig, listJobs, readJobFile, resolveJobFile } from "./state.mjs";
+import { getConfig, listJobs, normalizeJobSessionIds, readJobFile, resolveJobFile } from "./state.mjs";
 import { SESSION_ID_ENV } from "./tracked-jobs.mjs";
 import { resolveWorkspaceRoot } from "./workspace.mjs";
 
@@ -28,7 +28,19 @@ function filterJobsForCurrentSession(jobs, options = {}) {
   if (!sessionId) {
     return jobs;
   }
-  return jobs.filter((job) => job.sessionId === sessionId);
+  return jobs.filter((job) => job.claudeSessionId === sessionId);
+}
+
+export function findResumableTask(jobs, claudeSessionId, excludeJobId) {
+  const tasks = sortJobsNewestFirst(jobs).filter(
+    (job) => job.id !== excludeJobId && job.jobClass === "task" &&
+      (!claudeSessionId || job.claudeSessionId === claudeSessionId)
+  );
+  const active = tasks.find((job) => job.status === "queued" || job.status === "running");
+  if (active) {
+    throw new Error(`Task ${active.id} is still running. Use /copilot:status before continuing it.`);
+  }
+  return tasks.find((job) => job.status === "completed" && job.copilotSessionId) ?? null;
 }
 
 function getJobTypeLabel(job) {
@@ -192,7 +204,7 @@ export function readStoredJob(workspaceRoot, jobId) {
   if (!fs.existsSync(jobFile)) {
     return null;
   }
-  return readJobFile(jobFile);
+  return normalizeJobSessionIds(readJobFile(jobFile));
 }
 
 function matchJobReference(jobs, reference, predicate = () => true) {
@@ -248,7 +260,7 @@ export function buildStatusSnapshot(cwd, options = {}) {
 
 export function buildSingleJobSnapshot(cwd, reference, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const jobs = sortJobsNewestFirst(listJobs(workspaceRoot));
+  const jobs = sortJobsNewestFirst(filterJobsForCurrentSession(listJobs(workspaceRoot), options));
   const selected = matchJobReference(jobs, reference);
   if (!selected) {
     throw new Error(`No job found for "${reference}". Run /copilot:status to inspect known jobs.`);
@@ -287,7 +299,7 @@ export function resolveResultJob(cwd, reference) {
 
 export function resolveCancelableJob(cwd, reference) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const jobs = sortJobsNewestFirst(listJobs(workspaceRoot));
+  const jobs = sortJobsNewestFirst(filterJobsForCurrentSession(listJobs(workspaceRoot)));
   const activeJobs = jobs.filter((job) => job.status === "queued" || job.status === "running");
 
   if (reference) {

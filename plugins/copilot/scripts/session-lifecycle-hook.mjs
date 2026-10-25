@@ -4,7 +4,8 @@ import fs from "node:fs";
 import process from "node:process";
 
 import { terminateProcessTree } from "./lib/process.mjs";
-import { loadState, resolveStateFile, saveState } from "./lib/state.mjs";
+import { listJobs, upsertJob, writeJobFile } from "./lib/state.mjs";
+import { readStoredJob } from "./lib/job-control.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 
 export const SESSION_ID_ENV = "COPILOT_COMPANION_SESSION_ID";
@@ -33,25 +34,26 @@ function cleanupSessionJobs(cwd, sessionId) {
   if (!cwd || !sessionId) return;
   try {
     const workspaceRoot = resolveWorkspaceRoot(cwd);
-    const stateFile = resolveStateFile(workspaceRoot);
-    if (!fs.existsSync(stateFile)) return;
-
-    const state = loadState(workspaceRoot);
-    const sessionJobs = state.jobs.filter((job) => job.sessionId === sessionId);
+    const sessionJobs = listJobs(workspaceRoot).filter((job) => job.claudeSessionId === sessionId);
     if (sessionJobs.length === 0) return;
 
     for (const job of sessionJobs) {
       if (job.status === "queued" || job.status === "running") {
-        try { terminateProcessTree(job.pid ?? Number.NaN); } catch {}
+        terminateProcessTree(job.pid ?? Number.NaN);
+        const cancelled = {
+          ...job,
+          status: "cancelled",
+          phase: "cancelled",
+          pid: null,
+          completedAt: new Date().toISOString(),
+          errorMessage: "The owning Claude session ended."
+        };
+        writeJobFile(workspaceRoot, job.id, { ...readStoredJob(workspaceRoot, job.id), ...cancelled });
+        upsertJob(workspaceRoot, cancelled);
       }
     }
-
-    saveState(workspaceRoot, {
-      ...state,
-      jobs: state.jobs.filter((job) => job.sessionId !== sessionId)
-    });
-  } catch {
-    // Best-effort cleanup
+  } catch (error) {
+    process.stderr.write(`Copilot session cleanup failed: ${error.message}\n`);
   }
 }
 

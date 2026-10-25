@@ -100,10 +100,11 @@ function escapeMarkdownCell(value) {
 }
 
 function formatCopilotResumeCommand(job) {
-  if (!job?.threadId) {
+  const sessionId = job?.copilotSessionId ?? job?.threadId;
+  if (!sessionId) {
     return null;
   }
-  return `copilot resume ${job.threadId}`;
+  return `copilot resume ${sessionId}`;
 }
 
 function appendActiveJobsTable(lines, jobs) {
@@ -116,7 +117,7 @@ function appendActiveJobsTable(lines, jobs) {
       actions.push(`/copilot:cancel ${job.id}`);
     }
     lines.push(
-      `| ${escapeMarkdownCell(job.id)} | ${escapeMarkdownCell(job.kindLabel)} | ${escapeMarkdownCell(job.status)} | ${escapeMarkdownCell(job.phase ?? "")} | ${escapeMarkdownCell(job.elapsed ?? "")} | ${escapeMarkdownCell(job.threadId ?? "")} | ${escapeMarkdownCell(job.summary ?? "")} | ${actions.map((action) => `\`${action}\``).join("<br>")} |`
+      `| ${escapeMarkdownCell(job.id)} | ${escapeMarkdownCell(job.kindLabel)} | ${escapeMarkdownCell(job.status)} | ${escapeMarkdownCell(job.phase ?? "")} | ${escapeMarkdownCell(job.elapsed ?? "")} | ${escapeMarkdownCell(job.copilotSessionId ?? job.threadId ?? "")} | ${escapeMarkdownCell(job.summary ?? "")} | ${actions.map((action) => `\`${action}\``).join("<br>")} |`
     );
   }
 }
@@ -135,8 +136,8 @@ function pushJobDetails(lines, job, options = {}) {
   if (options.showDuration && job.duration) {
     lines.push(`  Duration: ${job.duration}`);
   }
-  if (job.threadId) {
-    lines.push(`  Copilot session ID: ${job.threadId}`);
+  if (job.copilotSessionId ?? job.threadId) {
+    lines.push(`  Copilot session ID: ${job.copilotSessionId ?? job.threadId}`);
   }
   const resumeCommand = formatCopilotResumeCommand(job);
   if (resumeCommand) {
@@ -388,7 +389,8 @@ export function renderJobStatusReport(job) {
 }
 
 export function renderStoredJobResult(job, storedJob) {
-  const threadId = storedJob?.threadId ?? job.threadId ?? null;
+  const threadId = storedJob?.copilotSessionId ?? job.copilotSessionId ??
+    storedJob?.threadId ?? job.threadId ?? storedJob?.result?.sessionId ?? null;
   const resumeCommand = threadId ? `copilot resume ${threadId}` : null;
   if (isStructuredReviewStoredResult(storedJob) && storedJob?.rendered) {
     const output = storedJob.rendered.endsWith("\n") ? storedJob.rendered : `${storedJob.rendered}\n`;

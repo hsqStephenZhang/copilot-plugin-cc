@@ -14,6 +14,7 @@ import {
   generateJobId,
   setConfig,
   getConfig,
+  normalizeJobSessionIds,
   writeJobFile,
   readJobFile,
   resolveJobFile,
@@ -59,6 +60,17 @@ describe("state", () => {
     const b = generateJobId("task");
     assert.notEqual(a, b);
     assert.ok(a.startsWith("task-"));
+  });
+
+  it("migrates legacy Claude and Copilot IDs without confusing their ownership", () => {
+    const job = normalizeJobSessionIds({
+      sessionId: "claude-123", threadId: "copilot-456"
+    });
+    assert.equal(job.claudeSessionId, "claude-123");
+    assert.equal(job.copilotSessionId, "copilot-456");
+    assert.equal(job.sessionId, undefined);
+    assert.equal(normalizeJobSessionIds({ sessionId: "claude-only" }).copilotSessionId, null);
+    assert.equal(normalizeJobSessionIds({ result: { sessionId: "stored-copilot" } }).copilotSessionId, "stored-copilot");
   });
 
   it("upsertJob creates and updates jobs", () => {

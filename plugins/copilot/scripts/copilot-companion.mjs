@@ -33,6 +33,7 @@ import {
 import {
   buildSingleJobSnapshot,
   buildStatusSnapshot,
+  findResumableTask,
   readStoredJob,
   resolveCancelableJob,
   resolveResultJob,
@@ -279,18 +280,10 @@ async function waitForSingleJobSnapshot(cwd, reference, options = {}) {
 }
 
 async function resolveLatestTrackedTaskSession(workspaceRoot, options = {}) {
-  const jobs = sortJobsNewestFirst(listJobs(workspaceRoot)).filter((job) => job.id !== options.excludeJobId);
-  const activeTask = jobs.find((job) => job.jobClass === "task" && (job.status === "queued" || job.status === "running"));
-  if (activeTask) {
-    throw new Error(`Task ${activeTask.id} is still running. Use /copilot:status before continuing it.`);
-  }
-
-  const trackedTask = jobs.find((job) => job.jobClass === "task" && job.status === "completed" && job.sessionId);
-  if (trackedTask) {
-    return { id: trackedTask.sessionId };
-  }
-
-  return null;
+  const task = findResumableTask(
+    listJobs(workspaceRoot), process.env[SESSION_ID_ENV], options.excludeJobId
+  );
+  return task ? { id: task.copilotSessionId } : null;
 }
 
 async function executeReviewRun(request) {
@@ -322,6 +315,7 @@ async function executeReviewRun(request) {
 
   const session = await createSession({
     model: request.model,
+    cwd: request.cwd,
     systemMessage: isStructured
       ? "You are Copilot performing an adversarial software review. Return your findings as JSON matching the provided schema."
       : "You are Copilot performing a code review. Provide clear, actionable feedback."
@@ -355,7 +349,7 @@ async function executeReviewRun(request) {
     };
     return {
       exitStatus: rawOutput ? 0 : 1,
-      sessionId: result.sessionId,
+      copilotSessionId: result.sessionId,
       payload,
       rendered: renderReviewResult(parsed, {
         reviewLabel: reviewName,
@@ -382,7 +376,7 @@ async function executeReviewRun(request) {
   };
   return {
     exitStatus: rawOutput ? 0 : 1,
-    sessionId: result.sessionId,
+    copilotSessionId: result.sessionId,
     payload,
     rendered: renderReviewResult(
       { parsed: null, parseError: null, rawOutput },
@@ -423,7 +417,9 @@ async function executeTaskRun(request) {
 
   const session = await createSession({
     model: request.model,
-    sessionId
+    cwd: request.cwd,
+    sessionId,
+    resume: request.resumeLast
   });
 
   const promptText = request.prompt || DEFAULT_CONTINUE_PROMPT;
@@ -453,7 +449,7 @@ async function executeTaskRun(request) {
 
   return {
     exitStatus: rawOutput ? 0 : 1,
-    sessionId: result.sessionId ?? sessionId,
+    copilotSessionId: result.sessionId ?? sessionId,
     payload,
     rendered,
     summary: firstMeaningfulLine(rawOutput, firstMeaningfulLine(failureMessage, `${taskMetadata.title} finished.`)),
@@ -826,16 +822,7 @@ function handleTaskResumeCandidate(argv) {
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
   const sessionId = process.env[SESSION_ID_ENV] ?? null;
-  const jobs = sortJobsNewestFirst(listJobs(workspaceRoot));
-  const candidate =
-    jobs.find(
-      (job) =>
-        job.jobClass === "task" &&
-        job.sessionId &&
-        job.status !== "queued" &&
-        job.status !== "running" &&
-        (!sessionId || job.sessionId === sessionId)
-    ) ?? null;
+  const candidate = findResumableTask(listJobs(workspaceRoot), sessionId);
 
   const payload = {
     available: Boolean(candidate),
@@ -848,7 +835,7 @@ function handleTaskResumeCandidate(argv) {
             status: candidate.status,
             title: candidate.title ?? null,
             summary: candidate.summary ?? null,
-            sessionId: candidate.sessionId,
+            copilotSessionId: candidate.copilotSessionId,
             completedAt: candidate.completedAt ?? null,
             updatedAt: candidate.updatedAt ?? null
           }
