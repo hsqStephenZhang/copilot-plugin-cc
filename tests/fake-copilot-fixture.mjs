@@ -37,6 +37,9 @@ export class FakeCopilotSession {
 
   async sendAndWait(options, timeout) {
     this.timeout = timeout;
+    if (process.env.COPILOT_TEST_PROMPT) {
+      fs.writeFileSync(process.env.COPILOT_TEST_PROMPT, options.prompt);
+    }
     this.messages.push(options);
     for (const event of this._cannedEvents) {
       this._emit(event);

@@ -70,7 +70,6 @@ const MODEL_ALIASES = new Map([
   ["codex", "gpt-5.3-codex"],
   ["gemini", "gemini-3.1-pro"]
 ]);
-const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
 
 function printUsage() {
   console.log(
@@ -474,13 +473,6 @@ function buildReviewJobMetadata(reviewName, target) {
 }
 
 function buildTaskRunMetadata({ prompt, resumeLast = false }) {
-  if (!resumeLast && String(prompt ?? "").includes(STOP_REVIEW_TASK_MARKER)) {
-    return {
-      title: "Copilot Stop Gate Review",
-      summary: "Stop-gate review of previous Claude turn"
-    };
-  }
-
   const title = resumeLast ? "Copilot Resume" : "Copilot Task";
   const fallbackSummary = resumeLast ? DEFAULT_CONTINUE_PROMPT : "Task";
   return {

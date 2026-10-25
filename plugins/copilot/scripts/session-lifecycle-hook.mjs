@@ -6,6 +6,7 @@ import process from "node:process";
 import { terminateProcessTree } from "./lib/process.mjs";
 import { listJobs, upsertJob, writeJobFile } from "./lib/state.mjs";
 import { readStoredJob } from "./lib/job-control.mjs";
+import { clearTurnSnapshot } from "./lib/turn-review.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 
 export const SESSION_ID_ENV = "COPILOT_COMPANION_SESSION_ID";
@@ -34,6 +35,7 @@ function cleanupSessionJobs(cwd, sessionId) {
   if (!cwd || !sessionId) return;
   try {
     const workspaceRoot = resolveWorkspaceRoot(cwd);
+    clearTurnSnapshot(workspaceRoot, sessionId);
     const sessionJobs = listJobs(workspaceRoot).filter((job) => job.claudeSessionId === sessionId);
     if (sessionJobs.length === 0) return;
 

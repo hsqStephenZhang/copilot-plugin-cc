@@ -26,6 +26,7 @@ export function createRuntimeWorkspace() {
   const git = (...args) => {
     const result = spawnSync("git", args, { cwd: dir, encoding: "utf8" });
     if (result.status !== 0) throw new Error(result.stderr);
+    return result.stdout;
   };
   git("init", "--quiet");
   git("config", "user.email", "test@example.com");
@@ -41,6 +42,15 @@ export function createRuntimeWorkspace() {
   env.PATH = `${bin}${path.delimiter}${process.env.PATH}`;
   return {
     dir, env, git,
+    hook(name, input = {}, extraEnv = {}) {
+      return spawnSync(process.execPath, [path.resolve(root, `../plugins/copilot/scripts/${name}.mjs`)], {
+        cwd: dir,
+        encoding: "utf8",
+        env: { ...env, ...extraEnv },
+        input: JSON.stringify({ cwd: dir, session_id: env.COPILOT_COMPANION_SESSION_ID, ...input }),
+        timeout: 30000
+      });
+    },
     run(args, options = {}) {
       return spawnSync(process.execPath, [path.resolve(root, "../plugins/copilot/scripts/copilot-companion.mjs"), ...args], {
         cwd: dir, encoding: "utf8", env, timeout: 15000, ...options
