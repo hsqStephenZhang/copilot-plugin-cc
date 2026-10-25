@@ -1,5 +1,5 @@
 ---
-description: Delegate investigation, an explicit fix request, or follow-up rescue work to the Copilot rescue subagent
+description: Delegate investigation, an explicit fix request, or follow-up rescue work to Copilot
 argument-hint: "[--background|--wait] [--resume|--fresh] [--model <model>] [--effort <low|medium|high|xhigh|max>] [what Copilot should investigate, solve, or continue]"
 disable-model-invocation: true
 allowed-tools: Bash(node:*), AskUserQuestion
@@ -45,7 +45,7 @@ Operating rules:
 - Keep routing and runtime flags separate from the task text. For complex or multiline task text, use `--prompt-file` rather than embedding unescaped text in a shell command.
 - Return the Copilot companion stdout verbatim to the user.
 - Do not paraphrase, summarize, rewrite, or add commentary before or after it.
-- Do not inspect files, poll status, fetch results, or do independent follow-up work.
+- Do not inspect files, poll status, or do independent follow-up work. Fetch a result only once on the background completion notification described below.
 - Leave `--effort` unset unless the user explicitly asks for a specific reasoning effort.
 - Leave the model unset unless the user explicitly asks for one. If they ask for `codex`, map it to `gpt-5.3-codex`; pass other concrete model IDs unchanged.
 - Leave `--resume` and `--fresh` in the runtime arguments.

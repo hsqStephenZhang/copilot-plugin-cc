@@ -5,6 +5,7 @@ import path from "node:path";
 import { execSync, spawn } from "node:child_process";
 
 import { createTempWorkspace, cleanupDir } from "./helpers.mjs";
+import { runTrackedJob } from "../plugins/copilot/scripts/lib/tracked-jobs.mjs";
 import {
   resolveStateDir,
   loadState,
@@ -140,7 +141,7 @@ describe("state", () => {
     assert.ok(saved.jobs.every((job) => job.status === "running"));
   });
 
-  it("keeps cancellation terminal when a worker subsequently reports completion", () => {
+  it("keeps cancellation terminal when a worker subsequently reports completion", async () => {
     saveState(tempDir, { jobs: [] });
     const id = "cancelled-worker";
     upsertJob(tempDir, { id, status: "running" });
@@ -152,6 +153,9 @@ describe("state", () => {
     writeJobFile(tempDir, id, { id, status: "failed" });
     assert.equal(listJobs(tempDir).find((job) => job.id === id).status, "cancelled");
     assert.equal(readJobFile(resolveJobFile(tempDir, id)).status, "cancelled");
+    await assert.rejects(runTrackedJob({ id, workspaceRoot: tempDir }, async () => {
+      assert.fail("A cancelled worker must not start a model request");
+    }), /cancelled before execution/);
   });
 
   it("reports corrupt state instead of silently resetting configuration", () => {

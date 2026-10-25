@@ -148,8 +148,11 @@ export async function runTrackedJob(job, runner, options = {}) {
     pid: process.pid,
     logFile: options.logFile ?? job.logFile ?? null
   };
+  const state = upsertJob(job.workspaceRoot, runningRecord);
+  if (!state.jobs.some((entry) => entry.id === job.id && entry.status === "running")) {
+    throw new Error(`Copilot job ${job.id} was cancelled before execution.`);
+  }
   writeJobFile(job.workspaceRoot, job.id, runningRecord);
-  upsertJob(job.workspaceRoot, runningRecord);
 
   try {
     const execution = await runner();
