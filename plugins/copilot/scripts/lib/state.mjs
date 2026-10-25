@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import lockfile from "proper-lockfile";
+import { createRequire } from "node:module";
 
 import { resolveWorkspaceRoot } from "./workspace.mjs";
 import { writeJsonFile } from "./fs.mjs";
@@ -13,6 +13,7 @@ const FALLBACK_STATE_ROOT_DIR = path.join(os.tmpdir(), "copilot-companion");
 const STATE_FILE_NAME = "state.json";
 const JOBS_DIR_NAME = "jobs";
 const MAX_JOBS = 50;
+const require = createRequire(import.meta.url);
 
 function nowIso() {
   return new Date().toISOString();
@@ -128,6 +129,7 @@ function saveStateUnlocked(cwd, state) {
 }
 
 function withStateLock(cwd, action) {
+  const lockfile = require("proper-lockfile");
   ensureStateDir(cwd);
   const stateFile = resolveStateFile(cwd);
   const deadline = Date.now() + 15000;

@@ -4,7 +4,26 @@ argument-hint: '[--enable-review-gate|--disable-review-gate]'
 allowed-tools: Bash(node:*), Bash(npm:*), AskUserQuestion
 ---
 
-Run:
+First check the installed plugin's own dependencies:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/check-dependencies.mjs"
+```
+
+If this check fails, show its error and use `AskUserQuestion` once to ask whether to install the plugin dependencies. Do not confuse these with the global Copilot CLI:
+- `Install plugin dependencies (Recommended)`
+- `Skip for now`
+
+If approved, run:
+
+```bash
+npm ci --ignore-scripts --prefix "${CLAUDE_PLUGIN_ROOT}"
+node "${CLAUDE_PLUGIN_ROOT}/scripts/check-dependencies.mjs"
+```
+
+If installation was skipped or either command fails, present the error and stop. Do not run the runtime without its dependencies.
+
+Once dependencies are ready, run:
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/copilot-companion.mjs" setup --json $ARGUMENTS

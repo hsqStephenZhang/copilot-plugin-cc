@@ -2,7 +2,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { createRuntimeWorkspace, cleanupDir } from "./helpers.mjs";
+import { spawnSync } from "node:child_process";
+import { createRuntimeWorkspace, createTempWorkspace, cleanupDir } from "./helpers.mjs";
 import { watchJobFile } from "../plugins/copilot/scripts/job-monitor.mjs";
 
 describe("copilot-companion CLI", () => {
@@ -38,6 +39,23 @@ describe("copilot-companion CLI", () => {
 });
 
 describe("runtime command integration", () => {
+  it("reports missing dependencies in an isolated plugin installation before setup", () => {
+    const dir = createTempWorkspace();
+    try {
+      fs.cpSync(new URL("../plugins/copilot", import.meta.url), dir, {
+        recursive: true, filter: (source) => path.basename(source) !== "node_modules"
+      });
+      const check = spawnSync(process.execPath, [path.join(dir, "scripts/check-dependencies.mjs")], {
+        cwd: dir, encoding: "utf8"
+      });
+      assert.equal(check.status, 1);
+      assert.match(check.stderr, /Plugin dependencies are unavailable/);
+      assert.match(check.stderr, /npm ci --ignore-scripts/);
+    } finally {
+      cleanupDir(dir);
+    }
+  });
+
   it("completes background task and review workers and makes their output immediately retrievable", async () => {
     const workspace = createRuntimeWorkspace();
     try {

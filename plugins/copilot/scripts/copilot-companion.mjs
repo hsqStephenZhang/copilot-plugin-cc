@@ -193,7 +193,7 @@ async function buildSetupReport(cwd, actionsTaken = []) {
   }
   if (copilotStatus.available && !authStatus.loggedIn) {
     nextSteps.push("Run `!copilot login`.");
-    nextSteps.push("If browser login is blocked, retry with `!copilot login --device-auth` or `!copilot login --with-api-key`.");
+    nextSteps.push("If browser login is blocked, retry with `!copilot login --device-code`. For token-based login, run `copilot login --with-token` interactively; never include tokens in Claude messages or command arguments.");
   }
   if (!config.stopReviewGate) {
     nextSteps.push("Optional: run `/copilot:setup --enable-review-gate` to require a fresh review before stop.");
@@ -254,7 +254,7 @@ async function ensureCopilotReady(cwd) {
     throw new Error("Copilot CLI is not installed or is missing required runtime support. Install it with `npm install -g @github/copilot-cli`, then rerun `/copilot:setup`.");
   }
   if (!authStatus.loggedIn) {
-    throw new Error("Copilot is not authenticated. Run `!copilot auth login`, then rerun `/copilot:setup`.");
+    throw new Error("Copilot is not authenticated. Run `!copilot login`, then rerun `/copilot:setup`.");
   }
 }
 
@@ -970,7 +970,7 @@ main().catch((error) => {
   const message = error instanceof Error ? error.message : String(error);
   const isAuthError = /auth|login|unauthenticated|unauthorized|not signed in|credentials/i.test(message);
   if (isAuthError) {
-    process.stderr.write(`Copilot authentication failed: ${message}\nRun \`!copilot auth login\` to authenticate and retry.\n`);
+    process.stderr.write(`Copilot authentication failed: ${message}\nRun \`!copilot login\` to authenticate and retry.\n`);
   } else {
     process.stderr.write(`${message}\n`);
   }
