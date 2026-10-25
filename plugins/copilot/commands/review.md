@@ -35,8 +35,8 @@ Argument handling:
 - Preserve the user's arguments exactly.
 - Do not strip `--wait` or `--background` yourself.
 - Do not add extra review instructions or rewrite the user's intent.
-- The companion script parses `--wait` and `--background`, but Claude Code's `Bash(..., run_in_background: true)` is what actually detaches the run.
-- `/copilot:review` is native-review only. It does not support staged-only review, unstaged-only review, or extra focus text.
+- The companion script implements `--wait` and `--background`. Never also background the Bash call.
+- `/copilot:review` is an SDK-based read-only review. It does not support staged-only review, unstaged-only review, or extra focus text.
 - If the user needs custom review instructions or more adversarial framing, they should use `/copilot:adversarial-review`.
 
 Foreground flow:
@@ -49,13 +49,8 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/copilot-companion.mjs" review "$ARGUMENTS"
 - Do not fix any issues mentioned in the review output.
 
 Background flow:
-- Launch the review with `Bash` in the background:
-```typescript
-Bash({
-  command: `node "${CLAUDE_PLUGIN_ROOT}/scripts/copilot-companion.mjs" review "$ARGUMENTS"`,
-  description: "Copilot review",
-  run_in_background: true
-})
+- Run the helper once in a normal Bash call, ensuring `--background` is present:
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/copilot-companion.mjs" review "--background $ARGUMENTS"
 ```
-- Do not call `BashOutput` or wait for completion in this turn.
-- After launching the command, tell the user: "Copilot review started in the background. Check `/copilot:status` for progress."
+- Return the helper's queued-job output. Do not poll for completion.

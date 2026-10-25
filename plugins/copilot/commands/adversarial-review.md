@@ -38,7 +38,7 @@ Argument handling:
 - Preserve the user's arguments exactly.
 - Do not strip `--wait` or `--background` yourself.
 - Do not weaken the adversarial framing or rewrite the user's focus text.
-- The companion script parses `--wait` and `--background`, but Claude Code's `Bash(..., run_in_background: true)` is what actually detaches the run.
+- The companion script implements `--wait` and `--background`. Never also background the Bash call.
 - `/copilot:adversarial-review` uses the same review target selection as `/copilot:review`.
 - It supports working-tree review, branch review, and `--base <ref>`.
 - It does not support `--scope staged` or `--scope unstaged`.
@@ -54,13 +54,8 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/copilot-companion.mjs" adversarial-review "$
 - Do not fix any issues mentioned in the review output.
 
 Background flow:
-- Launch the review with `Bash` in the background:
-```typescript
-Bash({
-  command: `node "${CLAUDE_PLUGIN_ROOT}/scripts/copilot-companion.mjs" adversarial-review "$ARGUMENTS"`,
-  description: "Copilot adversarial review",
-  run_in_background: true
-})
+- Run the helper once in a normal Bash call, ensuring `--background` is present:
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/copilot-companion.mjs" adversarial-review "--background $ARGUMENTS"
 ```
-- Do not call `BashOutput` or wait for completion in this turn.
-- After launching the command, tell the user: "Copilot adversarial review started in the background. Check `/copilot:status` for progress."
+- Return the helper's queued-job output. Do not poll for completion.

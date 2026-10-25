@@ -3,6 +3,8 @@
  * Replaces the real @github/copilot-sdk in tests.
  */
 
+import fs from "node:fs";
+
 export class FakeCopilotSession {
   constructor(config = {}) {
     this.config = config;
@@ -80,5 +82,21 @@ export class FakeCopilotClient {
   async resumeSession(sessionId, config) {
     this.resumedSessionId = sessionId;
     return this.createSession({ ...config, sessionId });
+  }
+}
+
+export class CopilotClient extends FakeCopilotClient {
+  async getAuthStatus() {
+    return { isAuthenticated: process.env.COPILOT_TEST_AUTH !== "false" };
+  }
+
+  async createSession(config) {
+    if (process.env.COPILOT_TEST_TRACE) {
+      fs.appendFileSync(process.env.COPILOT_TEST_TRACE, `${JSON.stringify(config)}\n`);
+    }
+    this.setSessionConfig({
+      _cannedResponse: { data: { content: process.env.COPILOT_TEST_RESPONSE ?? "Task completed." } }
+    });
+    return super.createSession(config);
   }
 }

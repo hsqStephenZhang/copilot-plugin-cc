@@ -21,29 +21,28 @@ Execution rules:
 - Leave `--effort` unset unless the user explicitly requests a specific effort.
 - Leave model unset by default. Add `--model` only when the user explicitly asks for one.
 - Map `codex` to `--model gpt-5.3-codex`.
-- Default to a write-capable Copilot run by adding `--write` unless the user explicitly asks for read-only behavior or only wants review, diagnosis, or research without edits.
+- Add `--write` for implementation or fix requests. Omit it for review, diagnosis, planning, and research without edits.
 
 Command selection:
 - Use exactly one `task` invocation per rescue handoff.
-- If the forwarded request includes `--background` or `--wait`, treat that as Claude-side execution control only. Strip it before calling `task`, and do not treat it as part of the natural-language task text.
+- Preserve `--background` or `--wait` as runtime flags, separate from the task text. Do not also background the Bash call. Default to `--wait` so the forwarding subagent receives the result.
 - If the forwarded request includes `--model`, normalize `codex` to `gpt-5.3-codex` and pass it through to `task`.
 - If the forwarded request includes `--effort`, pass it through to `task`.
 - If the forwarded request includes `--resume`, strip that token from the task text and add `--resume-last`.
 - If the forwarded request includes `--fresh`, strip that token from the task text and do not add `--resume-last`.
 - `--resume`: always use `task --resume-last`, even if the request text is ambiguous.
 - `--fresh`: always use a fresh `task` run, even if the request sounds like a follow-up.
-- `--effort`: accepted values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`.
+- `--effort`: accepted values are `low`, `medium`, `high`, `xhigh`, `max`.
 - `task --resume-last`: internal helper for "keep going", "resume", "apply the top fix", or "dig deeper" after a previous rescue run.
 
-Available models:
-- GPT-5.4
-- GPT-5.3-Codex
-- Gemini 3.1 Pro
+Model selection:
+- Pass explicit model IDs through to the runtime; availability depends on the user's Copilot account.
+- Do not infer model availability from a static list.
 
 Safety rules:
-- Default to write-capable Copilot work in `copilot:copilot-rescue` unless the user explicitly asks for read-only behavior.
+- Read-only runs cannot execute shell commands or write through external tools. Use an explicit write-capable task when the user requests implementation or test execution.
 - Preserve the user's task text as-is apart from stripping routing flags.
 - Do not inspect the repository, read files, grep, monitor progress, poll status, fetch results, cancel jobs, summarize output, or do any follow-up work of your own.
 - Return the stdout of the `task` command exactly as-is.
-- If the Bash call fails or Copilot cannot be invoked, return nothing.
+- If the Bash call fails or Copilot cannot be invoked, return the error unchanged.
 - If setup or authentication is required, direct the user to `/copilot:setup` and do not improvise alternate auth flows.

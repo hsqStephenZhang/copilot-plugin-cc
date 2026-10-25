@@ -640,6 +640,12 @@ async function handleReviewCommand(argv, config) {
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
   const focusText = positionals.join(" ").trim();
+  if (options.background && options.wait) {
+    throw new Error("Choose either --background or --wait.");
+  }
+  if (config.reviewName === "Review" && focusText) {
+    throw new Error("Use /copilot:adversarial-review for custom review focus text.");
+  }
   const target = resolveReviewTarget(cwd, {
     base: options.base,
     scope: options.scope
@@ -654,18 +660,24 @@ async function handleReviewCommand(argv, config) {
     jobClass: "review",
     summary: metadata.summary
   });
+  const request = {
+    cwd,
+    base: options.base,
+    scope: options.scope,
+    model: options.model,
+    focusText,
+    reviewName: config.reviewName
+  };
+  if (options.background) {
+    await ensureCopilotReady(cwd);
+    const { payload } = enqueueBackgroundTask(cwd, job, request);
+    outputCommandResult(payload, renderQueuedTaskLaunch(payload), options.json);
+    return;
+  }
   await runForegroundCommand(
     job,
     (progress) =>
-      executeReviewRun({
-        cwd,
-        base: options.base,
-        scope: options.scope,
-        model: options.model,
-        focusText,
-        reviewName: config.reviewName,
-        onProgress: progress
-      }),
+      executeReviewRun({ ...request, onProgress: progress }),
     { json: options.json }
   );
 }
@@ -781,11 +793,9 @@ async function handleTaskWorker(argv) {
       workspaceRoot,
       logFile
     },
-    () =>
-      executeTaskRun({
-        ...request,
-        onProgress: progress
-      }),
+    () => storedJob.jobClass === "review"
+      ? executeReviewRun({ ...request, onProgress: progress })
+      : executeTaskRun({ ...request, onProgress: progress }),
     { logFile }
   );
 }
