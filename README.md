@@ -12,13 +12,14 @@ they already have.
 - `/copilot:review` for a normal read-only Copilot review
 - `/copilot:adversarial-review` for a steerable challenge review
 - `/copilot:rescue`, `/copilot:status`, `/copilot:result`, and `/copilot:cancel` to delegate work and manage background jobs
+- `/copilot:ping-pong` for a resident Copilot session with automatic Claude handoffs, capped at five rounds per task
 
 ## Requirements
 
 - **GitHub Copilot subscription or GitHub token.**
   - Usage will contribute to your Copilot usage limits. [Learn more](https://docs.github.com/en/copilot/about-github-copilot/subscription-plans-for-github-copilot).
 - **Node.js 20.19+ (20.x), or 22.12+**. Node.js 21 and early 22.x are not supported by the SDK.
-- **A current Claude Code release**. Background completion notifications require its optional `Monitor` tool.
+- **A current Claude Code release**. Automatic Ping-pong requires its `Monitor` tool; other background jobs can fall back to status/result commands.
 
 ## Install
 
@@ -166,6 +167,27 @@ Ask Copilot to redesign the database connection to be more resilient.
 - follow-up rescue requests can continue the latest Copilot task owned by the current Claude session
 - Claude's ownership ID and the resumable Copilot session ID are stored separately
 
+### `/copilot:ping-pong`
+
+Starts one resident SDK client and Copilot session for the current Claude conversation and repository. Unlike `/copilot:rescue --resume`, it keeps the process and connection alive between turns.
+
+Claude sends the task, watches for the result, checks the actual work, and either finishes or sends one focused follow-up on the same connection. The initial Copilot turn counts toward a **five-round maximum**. After round five, Claude reports what remains and waits; only an explicit user continuation starts another five-round batch. Completed and limit-reached sessions stay idle without submitting new prompts.
+
+```bash
+/copilot:ping-pong fix the flaky test and verify the smallest safe patch
+/copilot:ping-pong status
+/copilot:ping-pong continue address the remaining edge case
+/copilot:ping-pong stop
+```
+
+Model, effort, and read/write permission are fixed when the resident session starts. Implementation and explicit test-execution requests authorize a write-capable session; diagnosis and research remain read-only. Stop and restart to change these settings. SDK errors and approval requests halt automatic handoffs rather than triggering retries.
+
+Automatic handoffs use Claude's `Monitor` notifications, not a second Claude process. Without Monitor, the slash command does not start automatic work. If a watch is denied or becomes unavailable after launch, Claude pauses handoffs and reports the job ID for `/copilot:status` and `/copilot:result`; the current turn can still finish. Concurrent submissions are rejected, and continuation requests name the completed turn so a repeated notification cannot send it twice.
+
+`/copilot:cancel <turn-job-id>` stops that resident session as well as its active turn. Normal Claude `SessionEnd` stops both busy and idle workers owned by that conversation while preserving finished results. A force-kill that bypasses hooks can leave a worker behind; stop it before forcibly closing Claude, or resume the owning Claude conversation to run `ping-pong stop`.
+
+The internal helper also exposes `send --after <completed-job-id>` and `finish --after <completed-job-id>` for Claude's controller. Ordinary rescue continuation never reopens a session that belongs to the Ping-pong controller.
+
 ### `/copilot:status`
 
 Shows running and recent Copilot jobs for the current repository and Claude session. Without a Claude session ID, the runtime falls back to repository-wide selection.
@@ -224,6 +246,8 @@ When enabled, `UserPromptSubmit` captures a Git tree snapshot and `Stop` reviews
 
 No-change turns skip Copilot. Each turn is reviewed at most once, and an active stop hook cannot recursively trigger the gate. Findings, authentication failures, and invalid verdicts block the stop once; this is not an unlimited auto-fix loop or a guarantee that Claude's subsequent fixes are re-reviewed.
 
+While a Ping-pong turn is actively running, the gate defers review without consuming its snapshot, avoiding a review of files Copilot is still editing.
+
 Snapshots use a temporary Git index and leave your real index and working tree unchanged, but write objects into Git's object database. Git-ignored files and uncommitted changes inside submodules are outside this tree-diff scope. The gate adds review latency and Copilot usage; enable it deliberately. After first enabling it, tracking begins with the next user prompt.
 
 ## Typical Flows
@@ -264,7 +288,7 @@ The plugin uses `@github/copilot-sdk` and its managed Copilot runtime over SDK R
 
 ### Models and Effort
 
-Use `--model <model-id>` and `--effort <value>` on `/copilot:rescue` to choose task settings explicitly:
+Use `--model <model-id>` and `--effort <value>` on `/copilot:rescue` or when starting `/copilot:ping-pong` to choose task settings explicitly:
 
 ```bash
 /copilot:rescue --model gpt-5.4 --effort high investigate the flaky test
@@ -280,7 +304,7 @@ Copilot is a separate runtime. It does **not** inherit Claude Code's tool permis
 
 ### Moving The Work Over To Copilot
 
-Delegated tasks can also be resumed inside Copilot by running `copilot resume <copilot-session-id>` with the ID shown by `/copilot:result` or `/copilot:status`. Stop-gate reviews do not replace the rescue continuation candidate.
+Delegated tasks can also be resumed inside Copilot by running `copilot resume <copilot-session-id>` with the ID shown by `/copilot:result` or `/copilot:status`. Stop a resident Ping-pong session before opening its Copilot session in another client. Stop-gate reviews do not replace the rescue continuation candidate.
 
 This way you can review the Copilot work or continue the work there.
 
@@ -294,7 +318,7 @@ If you only use Claude Code today and have not used Copilot yet, you will also n
 
 ### Does the plugin use a separate Copilot runtime?
 
-Yes. The SDK starts and stops a managed local Copilot process for each invocation; it is not a connection to an already-running interactive Copilot terminal.
+Yes. Ordinary commands start and stop a managed local Copilot process for each invocation. Ping-pong keeps its own managed process alive for the Claude conversation; neither mode attaches to an already-running interactive Copilot terminal.
 
 That means:
 
@@ -314,4 +338,4 @@ The plugin does not implement a `base_url` override or promise to read Codex-sty
 
 ### Is this a persistent interactive Ping-pong session?
 
-No. Follow-up rescue calls can restore the same Copilot session and its conversation history, but each invocation starts and stops its SDK client. `--background` detaches one job; it does not keep an interactive Copilot process alive for new messages. A persistent daemon, input queue, and multi-turn Ping-pong protocol are not implemented.
+Use `/copilot:ping-pong` for a persistent SDK connection, serialized turns, and automatic Claude/Copilot handoffs. Follow-up rescue calls still restore history with a new client each time, and ordinary `--background` jobs are not converted into resident sessions.

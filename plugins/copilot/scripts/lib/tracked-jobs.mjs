@@ -168,6 +168,7 @@ export async function runTrackedJob(job, runner, options = {}) {
       pid: null,
       completedAt
     });
+    options.onComplete?.(execution);
     writeJobFile(job.workspaceRoot, job.id, {
       ...runningRecord,
       status: completionStatus,
@@ -193,6 +194,7 @@ export async function runTrackedJob(job, runner, options = {}) {
       errorMessage,
       completedAt
     });
+    options.onError?.(error);
     writeJobFile(job.workspaceRoot, job.id, {
       ...existing,
       status: "failed",

@@ -33,6 +33,7 @@ async function main() {
     process.stderr.write(`Copilot jobs are still running: ${running.map((job) => job.id).join(", ")}. Check /copilot:status.\n`);
   }
   if (!getConfig(workspaceRoot).stopReviewGate) return;
+  if (running.some((job) => job.pingPongSessionId)) return;
 
   const changes = collectTurnChanges(workspaceRoot, sessionId);
   if (!changes) {

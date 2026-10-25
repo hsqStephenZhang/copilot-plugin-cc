@@ -25,6 +25,7 @@ function defaultState() {
     config: {
       stopReviewGate: false
     },
+    pingPongSessions: {},
     jobs: []
   };
 }
@@ -82,6 +83,7 @@ export function loadState(cwd) {
         ...defaultState().config,
         ...(parsed.config ?? {})
       },
+      pingPongSessions: parsed.pingPongSessions ?? {},
       jobs: Array.isArray(parsed.jobs) ? parsed.jobs.map(normalizeJobSessionIds) : []
     };
   } catch (error) {
@@ -112,6 +114,7 @@ function saveStateUnlocked(cwd, state) {
       ...defaultState().config,
       ...(state.config ?? {})
     },
+    pingPongSessions: state.pingPongSessions ?? {},
     jobs: nextJobs
   };
 

@@ -8,6 +8,7 @@ import { listJobs, upsertJob, writeJobFile } from "./lib/state.mjs";
 import { readStoredJob } from "./lib/job-control.mjs";
 import { clearTurnSnapshot } from "./lib/turn-review.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
+import { stopPingPongSession } from "./lib/ping-pong.mjs";
 
 export const SESSION_ID_ENV = "COPILOT_COMPANION_SESSION_ID";
 const PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
@@ -31,17 +32,15 @@ function appendEnvVar(name, value) {
   fs.appendFileSync(process.env.CLAUDE_ENV_FILE, `export ${name}=${shellEscape(value)}\n`, "utf8");
 }
 
-function cleanupSessionJobs(cwd, sessionId) {
+async function cleanupSessionJobs(cwd, sessionId) {
   if (!cwd || !sessionId) return;
   try {
     const workspaceRoot = resolveWorkspaceRoot(cwd);
     clearTurnSnapshot(workspaceRoot, sessionId);
     const sessionJobs = listJobs(workspaceRoot).filter((job) => job.claudeSessionId === sessionId);
-    if (sessionJobs.length === 0) return;
-
     for (const job of sessionJobs) {
       if (job.status === "queued" || job.status === "running") {
-        terminateProcessTree(job.pid ?? Number.NaN);
+        if (!job.pingPongSessionId) terminateProcessTree(job.pid ?? Number.NaN);
         const cancelled = {
           ...job,
           status: "cancelled",
@@ -54,6 +53,7 @@ function cleanupSessionJobs(cwd, sessionId) {
         writeJobFile(workspaceRoot, job.id, { ...readStoredJob(workspaceRoot, job.id), ...cancelled });
       }
     }
+    await stopPingPongSession(workspaceRoot, sessionId);
   } catch (error) {
     process.stderr.write(`Copilot session cleanup failed: ${error.message}\n`);
   }
@@ -64,9 +64,9 @@ function handleSessionStart(input) {
   appendEnvVar(PLUGIN_DATA_ENV, process.env[PLUGIN_DATA_ENV]);
 }
 
-function handleSessionEnd(input) {
+async function handleSessionEnd(input) {
   const cwd = input.cwd || process.cwd();
-  cleanupSessionJobs(cwd, input.session_id || process.env[SESSION_ID_ENV]);
+  await cleanupSessionJobs(cwd, input.session_id || process.env[SESSION_ID_ENV]);
 }
 
 async function main() {
@@ -78,7 +78,7 @@ async function main() {
     return;
   }
   if (eventName === "SessionEnd") {
-    handleSessionEnd(input);
+    await handleSessionEnd(input);
   }
 }
 

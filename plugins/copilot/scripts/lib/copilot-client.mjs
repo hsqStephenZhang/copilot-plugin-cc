@@ -51,12 +51,16 @@ export async function createSession(options = {}, clientOverride) {
     } : {}),
     onPermissionRequest: (request) => {
       if (request.managedApprovalRequired || request.requestSandboxBypass) {
-        return { kind: "reject", feedback: "This request requires human approval. Run it interactively in Copilot." };
+        const feedback = "This request requires human approval. Run it interactively in Copilot.";
+        options.onPermissionDenied?.(feedback);
+        return { kind: "reject", feedback };
       }
       if (!readOnly || request.kind === "read" || request.kind === "url") {
         return { kind: "approved" };
       }
-      return { kind: "reject", feedback: "This Copilot run is read-only; shell, write, and external tool requests are not permitted." };
+      const feedback = "This Copilot run is read-only; shell, write, and external tool requests are not permitted.";
+      options.onPermissionDenied?.(feedback);
+      return { kind: "reject", feedback };
     },
     ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {})
   };
@@ -129,7 +133,9 @@ export async function runPrompt(session, prompt, options = {}) {
     };
   } finally {
     unsubscribe();
-    await session.disconnect();
+    if (!options.keepAlive) {
+      await session.disconnect();
+    }
   }
 }
 

@@ -52,6 +52,8 @@ import {
   SESSION_ID_ENV
 } from "./lib/tracked-jobs.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
+import { executeTaskPrompt } from "./lib/task-execution.mjs";
+import { finishPingPongTask, readPingPongStatus, stopPingPongSession, submitPingPongTurn } from "./lib/ping-pong.mjs";
 import {
   renderReviewResult,
   renderNativeReviewResult,
@@ -59,8 +61,7 @@ import {
   renderCancelReport,
   renderJobStatusReport,
   renderSetupReport,
-  renderStatusReport,
-  renderTaskResult
+  renderStatusReport
 } from "./lib/render.mjs";
 
 const ROOT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -81,6 +82,11 @@ function printUsage() {
       "  node scripts/copilot-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
       "  node scripts/copilot-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
       "  node scripts/copilot-companion.mjs task [--background|--wait] [--write] [--resume-last|--resume|--fresh] [--model <model|codex|gemini>] [--effort <low|medium|high|xhigh|max>] [prompt]",
+      "  node scripts/copilot-companion.mjs ping-pong start [--write] [--model <id>] [--effort <value>] [--prompt-file <path>] [prompt]",
+      "  node scripts/copilot-companion.mjs ping-pong send --after <completed-job-id> [--prompt-file <path>] [prompt]",
+      "  node scripts/copilot-companion.mjs ping-pong continue [--prompt-file <path>] [prompt]",
+      "  node scripts/copilot-companion.mjs ping-pong finish --after <completed-job-id>",
+      "  node scripts/copilot-companion.mjs ping-pong <status|stop> [--json]",
       "  node scripts/copilot-companion.mjs status [job-id] [--all] [--json]",
       "  node scripts/copilot-companion.mjs result [job-id] [--json]",
       "  node scripts/copilot-companion.mjs cancel [job-id] [--json]"
@@ -398,11 +404,6 @@ async function executeTaskRun(request) {
   const workspaceRoot = resolveWorkspaceRoot(request.cwd);
   await ensureCopilotReady(request.cwd);
 
-  const taskMetadata = buildTaskRunMetadata({
-    prompt: request.prompt,
-    resumeLast: request.resumeLast
-  });
-
   let sessionId = null;
   if (request.resumeLast) {
     const latestThread = await resolveLatestTrackedTaskSession(workspaceRoot, {
@@ -429,41 +430,53 @@ async function executeTaskRun(request) {
     reasoningEffort: request.effort
   });
 
-  const promptText = request.prompt || DEFAULT_CONTINUE_PROMPT;
-  const result = await runPrompt(session, promptText, { onProgress: request.onProgress });
-  const rawOutput = result.content ?? "";
-  const failureMessage = "";
+  return executeTaskPrompt(session, { ...request, prompt: request.prompt || DEFAULT_CONTINUE_PROMPT });
+}
 
-  const rendered = renderTaskResult(
-    {
-      rawOutput,
-      failureMessage,
-      reasoningSummary: result.reasoning ? [result.reasoning] : []
-    },
-    {
-      title: taskMetadata.title,
-      jobId: request.jobId ?? null,
-      write: Boolean(request.write)
+async function handlePingPong(argv) {
+  const normalized = normalizeArgv(argv);
+  const actions = new Set(["start", "send", "continue", "status", "finish", "stop"]);
+  const action = actions.has(normalized[0]) ? normalized.shift() : normalized.length ? "start" : "status";
+  const { options, positionals } = parseCommandInput(normalized, {
+    valueOptions: ["cwd", "model", "effort", "prompt-file", "after"],
+    booleanOptions: ["write", "json"],
+    aliasMap: { m: "model" }
+  });
+  const cwd = resolveCommandCwd(options);
+  if (options.after !== undefined && action !== "send" && action !== "finish") {
+    throw new Error("--after is only valid for ping-pong send or finish.");
+  }
+  let payload;
+  if (["status", "finish", "stop"].includes(action)) {
+    if (positionals.length || options.model !== undefined || options.effort !== undefined ||
+        options.write !== undefined || options["prompt-file"] !== undefined) {
+      throw new Error(`ping-pong ${action} does not accept a prompt or execution settings.`);
     }
-  );
-  const payload = {
-    status: rawOutput ? 0 : 1,
-    sessionId: result.sessionId ?? sessionId,
-    rawOutput,
-    touchedFiles: [],
-    reasoningSummary: result.reasoning ? [result.reasoning] : []
-  };
-
-  return {
-    exitStatus: rawOutput ? 0 : 1,
-    copilotSessionId: result.sessionId ?? sessionId,
-    payload,
-    rendered,
-    summary: firstMeaningfulLine(rawOutput, firstMeaningfulLine(failureMessage, `${taskMetadata.title} finished.`)),
-    jobTitle: taskMetadata.title,
-    jobClass: "task",
-    write: Boolean(request.write)
-  };
+    const session = action === "stop" ? await stopPingPongSession(cwd)
+      : action === "finish" ? finishPingPongTask(cwd, options.after) : readPingPongStatus(cwd);
+    payload = { session };
+  } else {
+    payload = await submitPingPongTurn(cwd, {
+      action, prompt: readTaskPrompt(cwd, options, positionals), after: options.after,
+      ...(options.model !== undefined ? { model: normalizeRequestedModel(options.model) } : {}),
+      ...(options.effort !== undefined ? { effort: normalizeReasoningEffort(options.effort) } : {}),
+      ...(options.write !== undefined ? { write: Boolean(options.write) } : {})
+    });
+  }
+  const record = payload.session;
+  const rendered = record ? [
+    `Copilot Ping-pong: ${record.status} (round ${record.round}/${record.maxRounds}).`,
+    `Resident session: ${record.id}`,
+    `Copilot session: ${record.copilotSessionId ?? "starting"}`,
+    `Worker PID: ${record.pid ?? "not running"}`,
+    ...(payload.jobId ? [`Job: ${payload.jobId}`, `Job file: ${payload.jobFile}`] : []),
+    ...(record.lastJobId ? [`Last job: ${record.lastJobId}`] : []),
+    ...(record.errorMessage ? [`Error: ${record.errorMessage}`] : []),
+    record.taskComplete ? "Task marked complete; the resident session is waiting for a new request."
+      : record.round >= record.maxRounds ? "Five-round limit reached. Wait for an explicit user continuation."
+      : "Read the turn result, verify it, then finish or send one follow-up and watch its job file."
+  ].join("\n") + "\n" : "No Ping-pong session for this Claude conversation.\n";
+  outputCommandResult(payload, rendered, options.json);
 }
 
 function buildReviewJobMetadata(reviewName, target) {
@@ -888,7 +901,14 @@ async function handleCancel(argv) {
   const { workspaceRoot, job } = resolveCancelableJob(cwd, reference);
   const existing = readStoredJob(workspaceRoot, job.id) ?? {};
 
-  terminateProcessTree(job.pid ?? Number.NaN);
+  if (job.pingPongSessionId) {
+    if (job.claudeSessionId !== process.env[SESSION_ID_ENV]) {
+      throw new Error("A Ping-pong job can only be cancelled by its owning Claude session.");
+    }
+    await stopPingPongSession(workspaceRoot);
+  } else {
+    terminateProcessTree(job.pid ?? Number.NaN);
+  }
   appendLogLine(job.logFile, "Cancelled by user.");
 
   const completedAt = nowIso();
@@ -945,6 +965,9 @@ async function main() {
       break;
     case "task":
       await handleTask(argv);
+      break;
+    case "ping-pong":
+      await handlePingPong(argv);
       break;
     case "task-worker":
       await handleTaskWorker(argv);

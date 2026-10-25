@@ -33,7 +33,7 @@ function filterJobsForCurrentSession(jobs, options = {}) {
 
 export function findResumableTask(jobs, claudeSessionId, excludeJobId) {
   const tasks = sortJobsNewestFirst(jobs).filter(
-    (job) => job.id !== excludeJobId && job.jobClass === "task" &&
+    (job) => job.id !== excludeJobId && job.jobClass === "task" && !job.pingPongSessionId &&
       (!claudeSessionId || job.claudeSessionId === claudeSessionId)
   );
   const active = tasks.find((job) => job.status === "queued" || job.status === "running");

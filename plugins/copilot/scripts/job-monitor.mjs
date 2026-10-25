@@ -16,7 +16,10 @@ export function watchJobFile(jobFile, options = {}) {
         }
         if (TERMINAL_STATUSES.has(job.status)) {
           fs.unwatchFile(jobFile, check);
-          resolve({ jobId: job.id, status: job.status });
+          resolve({
+            jobId: job.id, status: job.status,
+            ...(job.pingPongSessionId ? { pingPongSessionId: job.pingPongSessionId, round: job.round, maxRounds: job.maxRounds } : {})
+          });
         }
       } catch (error) {
         fs.unwatchFile(jobFile, check);
@@ -34,8 +37,14 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
     process.stderr.write("Usage: node job-monitor.mjs <absolute-job-file>\n");
     process.exitCode = 1;
   } else {
-    watchJobFile(jobFile).then(({ jobId, status }) => {
+    watchJobFile(jobFile).then(({ jobId, status, pingPongSessionId, round, maxRounds }) => {
       process.stdout.write(`Copilot job ${jobId} ${status}. Read /copilot:result ${jobId} for the stored output.\n`);
+      if (pingPongSessionId) {
+        process.stdout.write(`Ping-pong ${pingPongSessionId}, round ${round}/${maxRounds}. `);
+        process.stdout.write(status !== "completed" ? "Pause automatic handoffs and report this error or cancellation.\n"
+          : "Read the result and ping-pong status, verify the user's task, then finish or send one follow-up with --after " + jobId +
+            ". Watch the new job once. Never reset the five-round limit without an explicit user continuation.\n");
+      }
     }).catch((error) => {
       process.stderr.write(`Copilot job monitor failed: ${error.message}. Use /copilot:status instead.\n`);
       process.exitCode = 1;
