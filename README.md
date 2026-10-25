@@ -17,20 +17,21 @@ they already have.
 
 - **GitHub Copilot subscription or GitHub token.**
   - Usage will contribute to your Copilot usage limits. [Learn more](https://docs.github.com/en/copilot/about-github-copilot/subscription-plans-for-github-copilot).
-- **Node.js 18.18 or later**
+- **Node.js 20.19+ (20.x), or 22.12+**. Node.js 21 and early 22.x are not supported by the SDK.
+- **A current Claude Code release**. Background completion notifications require its optional `Monitor` tool.
 
 ## Install
 
 Add the marketplace in Claude Code:
 
 ```bash
-/plugin marketplace add wagnersza/copilot-plugin-cc
+/plugin marketplace add hsqStephenZhang/copilot-plugin-cc
 ```
 
 Install the plugin:
 
 ```bash
-/plugin install copilot@wagnersza
+/plugin install copilot@github-copilot
 ```
 
 Reload plugins:
@@ -45,7 +46,9 @@ Then run:
 /copilot:setup
 ```
 
-`/copilot:setup` will tell you whether Copilot is ready. If Copilot is missing and npm is available, it can offer to install Copilot for you.
+`/copilot:setup` first checks the dependencies inside the installed plugin directory and offers to install missing ones with `npm ci --ignore-scripts`. A Git-based plugin install does not install npm dependencies automatically. Installing them only in the marketplace repository root is not sufficient for Claude's isolated plugin cache.
+
+Setup then checks Copilot authentication. If the global Copilot CLI is missing and npm is available, it can offer to install it for you. Run setup again after a plugin update if dependencies have changed.
 
 If you prefer to install Copilot yourself, use:
 
@@ -56,7 +59,7 @@ npm install -g @github/copilot-cli
 If Copilot is installed but not logged in yet, run:
 
 ```bash
-!copilot auth login
+!copilot login
 ```
 
 After install, you should see:
@@ -76,7 +79,7 @@ One simple first run is:
 
 ### `/copilot:review`
 
-Runs a normal Copilot review on your current work. It gives you the same quality of code review as running `/review` inside Copilot directly.
+Runs a read-only review through the Copilot SDK, using a review prompt and the selected Git diff. This does not invoke Copilot CLI's native `/review` command and does not promise identical behavior or review quality.
 
 > [!NOTE]
 > Code review especially for multi-file changes might take a while. It's generally recommended to run it in the background.
@@ -125,7 +128,7 @@ This command is read-only. It does not fix code.
 
 ### `/copilot:rescue`
 
-Hands a task to Copilot through the `copilot:copilot-rescue` subagent.
+Hands a task to Copilot. The slash command runs in the main Claude conversation so it can ask whether to resume a previous task; natural-language delegation can use the thin `copilot:copilot-rescue` forwarding subagent.
 
 Use it when you want Copilot to:
 
@@ -135,9 +138,9 @@ Use it when you want Copilot to:
 - take a faster or cheaper pass with a smaller model
 
 > [!NOTE]
-> Depending on the task and the model you choose these tasks might take a long time and it's generally recommended to force the task to be in the background or move the agent to the background.
+> Long tasks can run with `--background`. `--wait` keeps the runtime in the foreground; it is not silently converted into a detached subagent.
 
-It supports `--background`, `--wait`, `--resume`, and `--fresh`. If you omit `--resume` and `--fresh`, the plugin can offer to continue the latest rescue thread for this repo.
+It supports `--background`, `--wait`, `--resume`, and `--fresh`. If you omit `--resume` and `--fresh`, the plugin can offer to continue the latest rescue thread owned by the current Claude session in this repo. Diagnosis, planning, and research are read-only; explicit implementation requests authorize a write-capable run.
 
 Examples:
 
@@ -146,7 +149,6 @@ Examples:
 /copilot:rescue fix the failing test with the smallest safe patch
 /copilot:rescue --resume apply the top fix from the last run
 /copilot:rescue --model gpt-5.4 --effort medium investigate the flaky integration test
-/copilot:rescue --model spark fix the issue quickly
 /copilot:rescue --background investigate the regression
 ```
 
@@ -159,12 +161,14 @@ Ask Copilot to redesign the database connection to be more resilient.
 **Notes:**
 
 - if you do not pass `--model` or `--effort`, Copilot chooses its own defaults.
-- if you say `spark`, the plugin maps that to `gpt-5.3-codex-spark`
-- follow-up rescue requests can continue the latest Copilot task in the repo
+- explicit model IDs are passed through; availability depends on your Copilot account, not a static plugin list
+- supported effort values are `low`, `medium`, `high`, `xhigh`, and `max`; the selected model must support the requested value
+- follow-up rescue requests can continue the latest Copilot task owned by the current Claude session
+- Claude's ownership ID and the resumable Copilot session ID are stored separately
 
 ### `/copilot:status`
 
-Shows running and recent Copilot jobs for the current repository.
+Shows running and recent Copilot jobs for the current repository and Claude session. Without a Claude session ID, the runtime falls back to repository-wide selection.
 
 Examples:
 
@@ -216,10 +220,11 @@ You can also use `/copilot:setup` to manage the optional review gate.
 /copilot:setup --disable-review-gate
 ```
 
-When the review gate is enabled, the plugin uses a `Stop` hook to run a targeted Copilot review based on Claude's response. If that review finds issues, the stop is blocked so Claude can address them first.
+When enabled, `UserPromptSubmit` captures a Git tree snapshot and `Stop` reviews only the changes made during that turn's time window. Pre-existing changes are excluded; changes made by delegated or external processes during that window are included, even if committed before Claude stops. Claude's final response is context, not the review scope.
 
-> [!WARNING]
-> The review gate can create a long-running Claude/Copilot loop and may drain usage limits quickly. Only enable it when you plan to actively monitor the session.
+No-change turns skip Copilot. Each turn is reviewed at most once, and an active stop hook cannot recursively trigger the gate. Findings, authentication failures, and invalid verdicts block the stop once; this is not an unlimited auto-fix loop or a guarantee that Claude's subsequent fixes are re-reviewed.
+
+Snapshots use a temporary Git index and leave your real index and working tree unchanged, but write objects into Git's object database. Git-ignored files and uncommitted changes inside submodules are outside this tree-diff scope. The gate adds review latency and Copilot usage; enable it deliberately. After first enabling it, tracking begins with the next user prompt.
 
 ## Typical Flows
 
@@ -249,38 +254,33 @@ Then check in with:
 /copilot:result
 ```
 
+When `Monitor` is available and permitted, the main conversation watches that job's file and reads the result once it finishes. Watches are scoped to individual jobs, not broadcast to every Claude session. By default, Monitor watches last five minutes; Claude caps them at 30 minutes, or 10 minutes in single-prompt `-p` runs. If monitoring is unavailable, denied, or expires, the job keeps running and `/copilot:status` and `/copilot:result` remain available. A forwarding subagent that returns a detached job cannot arm Monitor itself, so use those commands unless the main conversation starts the watch.
+
+Jobs belong to the Claude session that started them. Ending that session cancels its active jobs but keeps completed history and the Copilot session IDs.
+
 ## Copilot Integration
 
-The Copilot plugin wraps the [Copilot CLI](https://docs.github.com/en/copilot/github-copilot-in-the-cli). It uses `@github/copilot-sdk` for ACP (Agent Communication Protocol) communication with the Copilot backend and [applies the same configuration](https://docs.github.com/en/copilot/configuring-github-copilot).
+The plugin uses `@github/copilot-sdk` and its managed Copilot runtime over SDK RPC. The installed plugin declares and locks its own dependencies; the runtime does not depend on finding the SDK in the marketplace repository's parent directory.
 
-### Supported Models
+### Models and Effort
 
-The plugin supports the following models:
+Use `--model <model-id>` and `--effort <value>` on `/copilot:rescue` to choose task settings explicitly:
 
-- `GPT-5.4` — latest high-capability model
-- `GPT-5.3-Codex` — optimized for code tasks
-- `Gemini 3.1 Pro` — Google's advanced reasoning model
-
-### Common Configurations
-
-If you want to change the default reasoning effort or the default model that gets used by the plugin, you can define that inside your user-level or project-level `config.toml`. For example to always use `gpt-5.4` on `high` for a specific project you can add the following to a `.copilot/config.toml` file at the root of the directory you started Claude in:
-
-```toml
-model = "gpt-5.4"
-model_reasoning_effort = "xhigh"
+```bash
+/copilot:rescue --model gpt-5.4 --effort high investigate the flaky test
 ```
 
-Your configuration will be picked up based on:
+Model availability and supported effort levels depend on Copilot and your account. Omitted settings use the SDK/runtime defaults. The plugin does not read `.copilot/config.toml` or translate arbitrary model aliases.
 
-- user-level config in `~/.copilot/config.toml`
-- project-level overrides in `.copilot/config.toml`
-- project-level overrides only load when the [project is trusted](https://docs.github.com/en/copilot/configuring-github-copilot)
+### Permission Boundary
 
-Check out the Copilot docs for more [configuration options](https://docs.github.com/en/copilot).
+Read-only tasks and reviews expose only built-in file search/view and web lookup tools; they cannot run shell commands, write files, or invoke external tools. Explicit write-capable rescue tasks permit normal Copilot tool requests in the shared checkout. Requests requiring managed human approval or a sandbox bypass are rejected instead of being automatically approved.
+
+Copilot is a separate runtime. It does **not** inherit Claude Code's tool permission rules or sandbox merely because Claude launched it. Review changes before trusting a write-capable task. SDK turns have a 15-minute timeout; this is separate from the shorter Monitor notification deadline.
 
 ### Moving The Work Over To Copilot
 
-Delegated tasks and any [stop gate](#what-does-the-review-gate-do) run can also be directly resumed inside Copilot by running `copilot resume` either with the specific session ID you received from running `/copilot:result` or `/copilot:status` or by selecting it from the list.
+Delegated tasks can also be resumed inside Copilot by running `copilot resume <copilot-session-id>` with the ID shown by `/copilot:result` or `/copilot:status`. Stop-gate reviews do not replace the rescue continuation candidate.
 
 This way you can review the Copilot work or continue the work there.
 
@@ -290,24 +290,28 @@ This way you can review the Copilot work or continue the work there.
 
 If you are already signed into Copilot on this machine, that account should work immediately here too. This plugin uses your local Copilot CLI authentication.
 
-If you only use Claude Code today and have not used Copilot yet, you will also need to sign in to Copilot with a GitHub account. [Copilot is available with various GitHub subscription plans](https://docs.github.com/en/copilot/about-github-copilot/subscription-plans-for-github-copilot), and `copilot auth login` supports GitHub sign-in. Run `/copilot:setup` to check whether Copilot is ready, and use `!copilot auth login` if it is not.
+If you only use Claude Code today and have not used Copilot yet, you will also need to sign in to Copilot with a GitHub account. [Copilot is available with various GitHub subscription plans](https://docs.github.com/en/copilot/about-github-copilot/subscription-plans-for-github-copilot). Run `/copilot:setup` to check readiness, and use `!copilot login` if needed. In a headless environment, use `!copilot login --device-code`. Never paste tokens into Claude messages or command arguments.
 
 ### Does the plugin use a separate Copilot runtime?
 
-No. This plugin delegates through your local `@github/copilot-cli` and uses `@github/copilot-sdk` for ACP communication on the same machine.
+Yes. The SDK starts and stops a managed local Copilot process for each invocation; it is not a connection to an already-running interactive Copilot terminal.
 
 That means:
 
-- it uses the same Copilot install you would use directly
-- it uses the same local authentication state
+- it uses the SDK's runtime dependency, which can differ from your global CLI version
+- it uses the local Copilot authentication state available to that process
 - it uses the same repository checkout and machine-local environment
 
 ### Will it use the same Copilot config I already have?
 
-Yes. If you already use Copilot, the plugin picks up the same [configuration](#common-configurations).
+Do not assume complete parity with an interactive CLI session. The plugin passes its own session configuration, and SDK configuration discovery is not enabled. Use the plugin's explicit model and effort flags rather than relying on repository config, hooks, or custom agents being loaded.
 
 ### Can I keep using my current token or base URL setup?
 
-Yes. Because the plugin uses your local Copilot CLI, your existing sign-in method and config still apply.
+Authentication methods and provider configuration must be supported by the installed SDK/runtime. `/copilot:setup` checks the SDK's actual authentication status rather than assuming that a global CLI installation is authenticated.
 
-If you need to point the built-in provider at a different endpoint, set `base_url` in your [Copilot config](https://docs.github.com/en/copilot/configuring-github-copilot).
+The plugin does not implement a `base_url` override or promise to read Codex-style `config.toml` settings.
+
+### Is this a persistent interactive Ping-pong session?
+
+No. Follow-up rescue calls can restore the same Copilot session and its conversation history, but each invocation starts and stops its SDK client. `--background` detaches one job; it does not keep an interactive Copilot process alive for new messages. A persistent daemon, input queue, and multi-turn Ping-pong protocol are not implemented.
